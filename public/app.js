@@ -19,7 +19,7 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && path !== '/auth/login') {
+  if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/signup')) {
     showLogin();
     throw new Error('Please sign in');
   }
@@ -35,24 +35,50 @@ function showLogin() {
   const fresh = view.cloneNode(false);
   view.replaceWith(fresh);
   view = fresh;
-  view.innerHTML = `
-    <form class="card login" id="login-form">
-      <div class="brand"><span class="dot"></span>Studio Project Manila</div>
-      <label class="f">Email<input name="email" type="email" autocomplete="username" required autofocus></label>
-      <label class="f">Password<input name="password" type="password" autocomplete="current-password" required></label>
-      <p class="login-err" id="login-err" hidden></p>
-      <button class="primary">Sign in</button>
-    </form>`;
-  $('#login-form').onsubmit = async (e) => {
+  let mode = location.hash.includes('signup') ? 'signup' : 'signin';
+  const draw = (msg = '', kind = 'err') => {
+    const up = mode === 'signup';
+    view.innerHTML = `
+      <form class="card auth" id="auth-form">
+        <div class="brand"><span class="name"><span class="dot"></span>Studio Project Manila</span>
+          <button type="button" class="icon-btn theme-toggle" aria-label="Switch light/dark mode"></button></div>
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" data-mode="signin" class="${up ? '' : 'on'}" aria-selected="${!up}">Sign in</button>
+          <button type="button" role="tab" data-mode="signup" class="${up ? 'on' : ''}" aria-selected="${up}">Create account</button>
+        </div>
+        ${up ? '<label class="f">Full name<input name="name" autocomplete="name" required></label>' : ''}
+        <label class="f">Email<input name="email" type="email" autocomplete="${up ? 'email' : 'username'}" required></label>
+        <label class="f">Password<input name="password" type="password" autocomplete="${up ? 'new-password' : 'current-password'}" ${up ? 'minlength="10"' : ''} required></label>
+        ${up ? '<p class="hint">At least 10 characters. New accounts need an admin to approve them before they can sign in.</p>' : ''}
+        ${msg ? `<p class="msg ${kind}">${esc(msg)}</p>` : ''}
+        <button class="primary" style="justify-content:center">${up ? 'Create account' : 'Sign in'}</button>
+      </form>`;
+    view.querySelector('input').focus();
+  };
+  view.addEventListener('click', (e) => {
+    const m = e.target.dataset.mode;
+    if (m && m !== mode) { mode = m; draw(); }
+  });
+  view.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const body = Object.fromEntries(new FormData(e.target));
+    const btn = e.target.querySelector('button.primary');
+    btn.disabled = true;
     try {
-      await api('/auth/login', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      if (mode === 'signup') {
+        const r = await api('/auth/signup', { method: 'POST', body });
+        if (r.pending) { mode = 'signin'; return draw('Account created! An admin needs to approve it — you can sign in once they do.', 'ok'); }
+      } else {
+        await api('/auth/login', { method: 'POST', body });
+      }
       await boot();
     } catch (err) {
-      const el = $('#login-err');
-      el.textContent = err.message; el.hidden = false;
-    }
-  };
+      draw(err.message);
+      const email = view.querySelector('input[name=email]');
+      if (email) email.value = body.email || '';
+    } finally { btn.disabled = false; }
+  });
+  draw();
 }
 async function boot() {
   try { me = await api('/auth/me'); } catch { return; }
@@ -62,6 +88,30 @@ async function boot() {
   $('#me-role').textContent = me.role;
   render();
 }
+
+// ---------- theme (light / dark) ----------
+function currentTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t) return t;
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.theme-toggle')) return;
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('spl-theme', next); } catch {}
+});
+
+// ---------- phone menu ----------
+function setMenu(open) {
+  document.body.classList.toggle('menu-open', open);
+  $('#scrim').hidden = !open;
+  $('#menu-btn').setAttribute('aria-expanded', String(open));
+}
+$('#menu-btn').onclick = () => setMenu(!document.body.classList.contains('menu-open'));
+$('#scrim').onclick = () => setMenu(false);
+$('#nav').addEventListener('click', (e) => { if (e.target.closest('a')) setMenu(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setMenu(false); });
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
 
 function toast(msg, isErr = false) {
@@ -143,6 +193,11 @@ async function refreshBadge() {
   const n = fu.filter((f) => f.status !== 'Resolved').length;
   const b = $('#fu-badge');
   b.hidden = !n; b.textContent = n;
+  if (me?.role === 'admin') {
+    const p = (await api('/users/pending-count').catch(() => ({ n: 0 }))).n;
+    const ub = $('#users-badge');
+    ub.hidden = !p; ub.textContent = p;
+  }
 }
 window.addEventListener('hashchange', render);
 
@@ -452,25 +507,58 @@ async function period(id = '') {
 }
 
 // ---------- Recorders ----------
+function contractPill(r) {
+  if (!r.contract) return '<span class="pill warn">No contract</span>';
+  const hard = (r.contract_hard_copy || '').toLowerCase();
+  const link = /^https?:\/\//.test(r.contract) ? ` <a href="${esc(r.contract)}" target="_blank" rel="noopener">open</a>` : '';
+  return `<span class="pill ok" title="${esc(r.contract)}">Signed</span>${link}${hard ? ` <span class="pill ${hard === 'done' ? 'ok' : 'warn'}">hard copy: ${esc(r.contract_hard_copy)}</span>` : ''}`;
+}
+
 async function recorders() {
-  const { recorders: list } = await lookups(true);
+  const [{ recorders: list }, s] = await Promise.all([lookups(true), api('/settings')]);
+  const admin = me.role === 'admin';
+  const noContract = list.filter((r) => !r.contract).length;
   view.innerHTML = `
-    <div class="head"><div><h1>Recorders</h1><p>${list.length} people · click a row to edit, merge duplicates, or see sessions</p></div>
-      <div style="display:flex;gap:8px"><input id="rc-q" placeholder="Search…"><button class="primary" id="rc-new">+ Add recorder</button></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>App acct.</th><th>Payout account</th><th class="num">Sessions</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
+    <div class="head"><div><h1>Recorders</h1><p>${list.length} people · ${s.recorder_synced_at ? `profiles synced from Google Sheet ${new Date(s.recorder_synced_at).toLocaleString()}` : 'profiles not synced yet'}</p></div>
+      <div class="head-actions">${admin ? '<button id="rc-sync">⟳ Sync from Google Sheet</button>' : ''}<button class="primary" id="rc-new">+ Add recorder</button></div></div>
+    <div class="toolbar">
+      <label class="f" style="flex:1;min-width:180px">Search<input id="rc-q" placeholder="Name, email, contact, account…"></label>
+      <label class="f">Show<select id="rc-f"><option value="">All recorders</option><option value="nocontract">No signed contract (${noContract})</option>
+        <option value="nohard">Hard copy not yet</option><option value="inactive">Inactive</option></select></label>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Contact</th><th>Payment</th><th>Contract</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
     <tbody id="rc-body"></tbody></table></div>`;
-  const draw = (q = '') => {
-    const ql = q.toLowerCase();
-    $('#rc-body').innerHTML = list.filter((r) => !ql || (r.name + ' ' + (r.aliases || '')).toLowerCase().includes(ql)).map((r) => `<tr>
-      <td><b>${esc(r.name)}</b>${r.aliases ? `<div class="muted" style="font-size:11px">aka ${esc(r.aliases)}</div>` : ''}${r.active ? '' : ' <span class="pill">inactive</span>'}</td>
-      <td>${esc(r.app_account || '')}</td><td>${esc(r.payout_account_no || '')}${r.payout_account_name ? `<div class="muted" style="font-size:11px">${esc(r.payout_account_name)}</div>` : ''}</td>
-      <td class="num">${r.sessions}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td><td>${fmtDate(r.last_date)}</td>
-      <td class="num"><a class="btn ghost" href="#/sessions/${r.id}">Sessions</a><button class="ghost" data-edit="${r.id}">Edit</button><button class="ghost" data-merge="${r.id}">Merge…</button></td></tr>`).join('');
+  const draw = () => {
+    const ql = $('#rc-q').value.toLowerCase(), f = $('#rc-f').value;
+    const rows = list.filter((r) => {
+      if (f === 'nocontract' && r.contract) return false;
+      if (f === 'nohard' && !/not/i.test(r.contract_hard_copy || '')) return false;
+      if (f === 'inactive' && r.active) return false;
+      return !ql || [r.name, r.aliases, r.email, r.contact, r.payout_account_no, r.address].join(' ').toLowerCase().includes(ql);
+    });
+    $('#rc-body').innerHTML = rows.map((r) => `<tr>
+      <td><b>${esc(r.name)}</b>${r.active ? '' : ' <span class="pill">inactive</span>'}
+        ${r.email ? `<div class="muted" style="font-size:12px">${esc(r.email)}</div>` : ''}${r.aliases ? `<div class="muted" style="font-size:11px">aka ${esc(r.aliases)}</div>` : ''}</td>
+      <td>${r.contact ? `<a href="tel:${esc(r.contact)}">${esc(r.contact)}</a>` : '<span class="muted">—</span>'}</td>
+      <td>${r.payment_method ? `<span class="pill">${esc(r.payment_method)}</span> ` : ''}${maskAcct(r.payout_account_no)}</td>
+      <td>${contractPill(r)}</td>
+      <td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td><td>${fmtDate(r.last_date)}</td>
+      <td class="num"><a class="btn ghost" href="#/sessions/${r.id}">Sessions</a><button class="ghost" data-edit="${r.id}">Edit</button><button class="ghost" data-merge="${r.id}">Merge…</button></td></tr>`).join('')
+      || '<tr><td colspan="8" class="empty">No recorders match.</td></tr>';
   };
-  $('#rc-q').oninput = (e) => draw(e.target.value);
+  $('#rc-q').oninput = draw;
+  $('#rc-f').onchange = draw;
   $('#rc-new').onclick = async () => {
     const v = await modal({ title: 'Add recorder', fields: [{ name: 'name', label: 'Full name', required: true, full: true }] });
     if (v) { await api('/recorders', { method: 'POST', body: v }); render(); }
+  };
+  if (admin) $('#rc-sync').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Syncing…';
+    try {
+      const r = await api('/recorders/sync', { method: 'POST' });
+      toast(`Synced ${r.rows} recorder profiles${r.created.length ? ` · ${r.created.length} new` : ''}`);
+      render();
+    } catch (err) { toast(err.message, true); e.target.disabled = false; e.target.textContent = '⟳ Sync from Google Sheet'; }
   };
   $('#rc-body').addEventListener('click', async (e) => {
     const id = e.target.dataset.edit || e.target.dataset.merge;
@@ -485,12 +573,20 @@ async function recorders() {
       await api(`/recorders/${id}/merge`, { method: 'POST', body: v });
       toast('Merged'); return render();
     }
-    const v = await modal({ title: 'Edit recorder', fields: [
+    const v = await modal({ title: 'Edit recorder',
+      extra: s.recorder_synced_at ? '<p class="muted" style="margin:0;font-size:12px">Profile fields come from the recorder Google Sheet — the next sync overwrites them with what\'s in the sheet.</p>' : '',
+      fields: [
       { name: 'name', label: 'Full name', value: r.name, required: true, full: true },
+      { name: 'email', label: 'Email', type: 'email', value: r.email || '' },
+      { name: 'contact', label: 'Contact no.', value: r.contact || '' },
+      { name: 'address', label: 'Address', value: r.address || '', full: true },
+      { name: 'payment_method', label: 'Payment method', value: r.payment_method || '' },
+      { name: 'payout_account_no', label: 'Account no.', value: r.payout_account_no || '' },
+      { name: 'payout_account_name', label: 'Account name (if different)', value: r.payout_account_name || '' },
       { name: 'app_account', label: 'App account no.', value: r.app_account || '' },
-      { name: 'contact', label: 'Contact (phone / email)', value: r.contact || '' },
-      { name: 'payout_account_no', label: 'Payout account no. (GoTyme/GCash/bank)', value: r.payout_account_no || '' },
-      { name: 'payout_account_name', label: 'Payout account name', value: r.payout_account_name || '' },
+      { name: 'id_document', label: 'ID on file', value: r.id_document || '' },
+      { name: 'contract', label: 'Signed contract', value: r.contract || '' },
+      { name: 'contract_hard_copy', label: 'Contract hard copy', type: 'select', options: [['', '—'], ['done', 'done'], ['not yet', 'not yet']], value: (r.contract_hard_copy || '').toLowerCase() },
       { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Inactive']], value: String(r.active) },
       { name: 'notes', label: 'Notes', type: 'textarea', value: r.notes || '', full: true },
     ] });
@@ -696,7 +792,9 @@ async function settings() {
         <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}" ${admin ? '' : 'disabled'}></label>
         <p class="muted" style="margin:0">= <b id="st-php">${php(s.rate_usd * s.fx_rate)}</b> per hour</p>
         <label class="f">Business rate (PHP per shift × scene)<input name="business_rate_php" type="number" step="0.01" value="${s.business_rate_php}" ${admin ? '' : 'disabled'}></label>
-        <label class="f">Business Google Sheet ID<input name="business_sheet_id" value="${esc(s.business_sheet_id)}" ${admin ? '' : 'disabled'}></label>
+        <label class="f">Business Google Sheet (ID or link)<input name="business_sheet_id" value="${esc(s.business_sheet_id)}" ${admin ? '' : 'disabled'}></label>
+        <label class="f">Recorder Google Sheet (ID or link)<input name="recorder_sheet_id" value="${esc(s.recorder_sheet_id)}" ${admin ? '' : 'disabled'}></label>
+        <label class="f">Auto-admin emails (become admin when they sign up)<input name="admin_emails" value="${esc(s.admin_emails)}" ${admin ? '' : 'disabled'}></label>
         ${admin ? '<div><button class="primary">Save rates</button></div>' : ''}
       </form>
       <form id="pw-form" class="card grid">
@@ -727,10 +825,17 @@ async function settings() {
 // ---------- Users (admin) ----------
 async function users() {
   if (me.role !== 'admin') { view.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
-  const list = await api('/users');
+  const all = await api('/users');
+  const pending = all.filter((u) => !u.approved);
+  const list = all.filter((u) => u.approved);
   view.innerHTML = `
-    <div class="head"><div><h1>Users</h1><p>Who can sign in. Admins can also manage users and rates.</p></div>
+    <div class="head"><div><h1>Users</h1><p>People sign up on the sign-in page; approve them here. Admins can also manage users and rates.</p></div>
       <button class="primary" id="us-new">+ Add user</button></div>
+    ${pending.length ? `<div class="section-head"><h2>Waiting for approval <span class="badge">${pending.length}</span></h2></div>
+    <div class="table-wrap" style="margin-bottom:18px"><table><thead><tr><th>Name</th><th>Email</th><th>Signed up</th><th></th></tr></thead><tbody>
+    ${pending.map((u) => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(u.email)}</td><td>${new Date(u.created_at).toLocaleString()}</td>
+      <td class="num"><button class="primary" data-approve="${u.id}">Approve</button> <button class="ghost danger" data-reject="${u.id}">Reject</button></td></tr>`).join('')}
+    </tbody></table></div>` : ''}
     <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>
     ${list.map((u) => `<tr><td><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="pill accent">you</span>' : ''}</td><td>${esc(u.email)}</td>
       <td><span class="pill ${u.role === 'admin' ? 'accent' : ''}">${esc(u.role)}</span></td>
@@ -738,6 +843,26 @@ async function users() {
       <td>${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—'}</td>
       <td class="num"><button class="ghost" data-edit="${u.id}">Edit</button></td></tr>`).join('')}
     </tbody></table></div>`;
+  view.addEventListener('click', async (e) => {
+    const approveId = e.target.dataset.approve, rejectId = e.target.dataset.reject;
+    if (!approveId && !rejectId) return;
+    const u = pending.find((x) => String(x.id) === (approveId || rejectId));
+    try {
+      if (approveId) {
+        const v = await modal({ title: `Approve ${u.name}`, submit: 'Approve',
+          extra: `<p class="muted" style="margin:0">${esc(u.email)} will be able to sign in and see all payout data.</p>`,
+          fields: [{ name: 'role', label: 'Role', type: 'select', full: true, options: [['staff', 'Staff — log hours, sessions, payments'], ['admin', 'Admin — also users and rates']] }] });
+        if (!v) return;
+        await api('/users/' + u.id, { method: 'PUT', body: { approved: true, role: v.role } });
+        toast(`${u.name} approved`);
+      } else {
+        if (!confirm(`Reject and delete the sign-up from ${u.name} (${u.email})?`)) return;
+        await api('/users/' + u.id, { method: 'DELETE' });
+        toast('Sign-up rejected');
+      }
+      render();
+    } catch (err) { toast(err.message, true); }
+  });
   const pwHint = '<p class="muted" style="margin:0">Share the password with them privately; they can change it in Settings.</p>';
   $('#us-new').onclick = async () => {
     const v = await modal({ title: 'Add user', submit: 'Create', extra: pwHint, fields: [

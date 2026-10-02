@@ -86,10 +86,10 @@ export function parseBusinessWorkbook(wb) {
   return { profiles, shifts, tabs };
 }
 
-async function fetchWorkbook(idOrUrl) {
+export async function fetchWorkbook(idOrUrl) {
   // Accept a bare ID or a full docs.google.com link.
   const sheetId = String(idOrUrl || '').match(/\/d\/([\w-]{20,})/)?.[1] || String(idOrUrl || '').trim();
-  if (!/^[\w-]{20,}$/.test(sheetId)) throw fail('Business sheet ID is not set (Settings)');
+  if (!/^[\w-]{20,}$/.test(sheetId)) throw fail('Google Sheet ID is not set (Settings)');
   const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`, { redirect: 'follow' });
   const type = res.headers.get('content-type') || '';
   if (!res.ok || !type.includes('spreadsheetml')) {

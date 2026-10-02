@@ -1,8 +1,9 @@
 // Express app with every /api route. Used by server.js locally and by the Netlify Function in production.
 import express from 'express';
 import { pool, q, one, tx, migrate, getSettings, resolveRecorder, resolveLocation, addAlias } from './db.js';
-import { requireUser, requireAdmin, login, setSessionCookie, clearSessionCookie, hashPassword, PUBLIC_USER } from './auth.js';
+import { requireUser, requireAdmin, login, signup, setSessionCookie, clearSessionCookie, hashPassword, PUBLIC_USER } from './auth.js';
 import { router as businessRoutes } from './businesses.js';
+import { router as recorderSyncRoutes } from './recorders-sync.js';
 
 export const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -66,7 +67,13 @@ async function updateFields(table, id, body, allowed, db = pool) {
 // ---------- Auth (public) ----------
 app.post('/api/auth/login', wrap(async (req, res) => {
   const user = await login(req.body.email, req.body.password);
-  if (!user) throw fail('Wrong email or password', 401);
+  setSessionCookie(res, user);
+  return { id: user.id, email: user.email, name: user.name, role: user.role };
+}));
+app.post('/api/auth/signup', wrap(async (req, res) => {
+  const { admin_emails = '' } = await getSettings();
+  const user = await signup(req.body, String(admin_emails).split(/[,\s]+/).filter(Boolean));
+  if (!user.approved) return { pending: true };
   setSessionCookie(res, user);
   return { id: user.id, email: user.email, name: user.name, role: user.role };
 }));
@@ -75,6 +82,7 @@ app.post('/api/auth/logout', wrap((req, res) => { clearSessionCookie(res); retur
 // Everything below needs a signed-in user.
 app.use('/api', requireUser);
 app.use('/api', businessRoutes);
+app.use('/api', recorderSyncRoutes);
 app.get('/api/auth/me', wrap((req) => req.user));
 
 app.post('/api/auth/password', wrap(async (req) => {
@@ -88,7 +96,17 @@ app.post('/api/auth/password', wrap(async (req) => {
 }));
 
 // ---------- Users (admin) ----------
-app.get('/api/users', requireAdmin, wrap(() => q(`SELECT ${PUBLIC_USER} FROM users ORDER BY name`)));
+app.get('/api/users', requireAdmin, wrap(() => q(`SELECT ${PUBLIC_USER} FROM users ORDER BY approved, name`)));
+app.get('/api/users/pending-count', wrap(async (req) =>
+  req.user.role === 'admin' ? one('SELECT COUNT(*)::int AS n FROM users WHERE NOT approved') : { n: 0 }));
+// Reject a sign-up / remove a login. Their logged sessions stay (created_by is cleared).
+app.delete('/api/users/:id', requireAdmin, wrap(async (req) => {
+  const id = Number(req.params.id);
+  if (id === req.user.id) throw fail("You can't delete yourself");
+  await q('UPDATE sessions SET created_by = NULL WHERE created_by = $1', [id]);
+  await q('DELETE FROM users WHERE id = $1', [id]);
+  return { ok: true };
+}));
 app.post('/api/users', requireAdmin, wrap(async (req) => {
   const { email, name, password, role = 'staff' } = req.body;
   if (!/^\S+@\S+\.\S+$/.test(email || '')) throw fail('Valid email is required');
@@ -105,7 +123,7 @@ app.put('/api/users/:id', requireAdmin, wrap(async (req) => {
     if (String(body.password).length < 10) throw fail('Password must be at least 10 characters');
     body.password_hash = await hashPassword(body.password);
   }
-  await updateFields('users', id, body, ['name', 'email', 'role', 'active', 'password_hash']);
+  await updateFields('users', id, body, ['name', 'email', 'role', 'active', 'approved', 'password_hash']);
   return one(`SELECT ${PUBLIC_USER} FROM users WHERE id = $1`, [id]);
 }));
 
@@ -133,7 +151,8 @@ app.post('/api/recorders', wrap(async (req) => {
 
 app.put('/api/recorders/:id', wrap(async (req) => {
   await updateFields('recorders', req.params.id, req.body,
-    ['name', 'app_account', 'payout_account_no', 'payout_account_name', 'contact', 'active', 'notes']);
+    ['name', 'app_account', 'payout_account_no', 'payout_account_name', 'payment_method', 'contact', 'email', 'address',
+      'id_document', 'contract', 'contract_hard_copy', 'active', 'notes']);
   return one('SELECT * FROM recorders WHERE id = $1', [Number(req.params.id)]);
 }));
 

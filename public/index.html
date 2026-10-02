@@ -2,15 +2,28 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#FF8D21" />
   <title>Studio Project Manila</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%232f6f5e'/><circle cx='16' cy='16' r='5' fill='white'/></svg>" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23FF8D21'/><circle cx='16' cy='16' r='5' fill='%231f1300'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    try { const t = localStorage.getItem('spl-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+  </script>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
-  <aside class="sidebar">
+<body class="logged-out">
+  <header class="topbar">
+    <button class="icon-btn" id="menu-btn" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <div class="brand"><span class="dot"></span>Studio Project Manila</div>
+    <button class="icon-btn theme-toggle" aria-label="Switch light/dark mode"></button>
+  </header>
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="sidebar" id="sidebar">
     <div class="brand"><span class="dot"></span>Studio Project Manila</div>
     <nav id="nav">
       <a href="#/" data-route="">Dashboard</a>
@@ -22,11 +35,14 @@
       <a href="#/locations" data-route="locations">Locations</a>
       <a href="#/followups" data-route="followups">Follow-ups <span id="fu-badge" class="badge" hidden></span></a>
       <a href="#/settings" data-route="settings">Settings</a>
-      <a href="#/users" data-route="users" id="nav-users" hidden>Users</a>
+      <a href="#/users" data-route="users" id="nav-users" hidden>Users <span id="users-badge" class="badge" hidden></span></a>
     </nav>
     <div class="me">
-      <div><b id="me-name"></b> <span class="muted" id="me-role"></span></div>
-      <button class="ghost" id="logout">Sign out</button>
+      <div class="me-who"><b id="me-name"></b> <span class="muted" id="me-role"></span></div>
+      <div class="me-actions">
+        <button class="icon-btn theme-toggle" aria-label="Switch light/dark mode"></button>
+        <button class="ghost" id="logout">Sign out</button>
+      </div>
     </div>
   </aside>
   <main id="view"></main>

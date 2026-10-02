@@ -164,9 +164,22 @@ CREATE TABLE IF NOT EXISTS business_shifts (
 );
 CREATE INDEX IF NOT EXISTS idx_business_shifts_date ON business_shifts(date);
 
+-- Recorder profile details (synced from the recorder Google Sheet).
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS payment_method TEXT;
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS id_document TEXT;          -- name of the ID file on record
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract TEXT;             -- signed service agreement (file name or link)
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_hard_copy TEXT;   -- "done" / "not yet"
+
+-- Self sign-up: new accounts wait for an admin to approve them.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
+
 INSERT INTO settings (key, value) VALUES ('rate_usd', '2.5'), ('fx_rate', '60'), ('ot_rate_php', '150'),
+  ('admin_emails', 'aubrey@atlascapture.io'),   -- these emails become admins (pre-approved) when they sign up
   ('business_rate_php', '850'),
-  ('business_sheet_id', '1904ps8_vBAG2Nezf7O9gnJveCRNRt38OoC35Ra2W2a8')
+  ('business_sheet_id', '1904ps8_vBAG2Nezf7O9gnJveCRNRt38OoC35Ra2W2a8'),
+  ('recorder_sheet_id', '1oTfvacoQFUpDsxxZ4s_xYMNqqYVJ5IWkAIpShnH0Jq8')
 ON CONFLICT (key) DO NOTHING;
 `;
 
