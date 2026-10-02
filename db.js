@@ -186,7 +186,9 @@ ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_hard_copy TEXT;   -- "do
 
 -- Self sign-up: new accounts wait for an admin to approve them.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
--- Roles: admin | sdr | set_director | recorder. A recorder login sees only the recorder it's linked to.
+-- Roles: admin | sdr | set_director | recorder. A recorder login sees only the recorder whose
+-- sheet email matches the login email (resolved on each request, so sheet changes apply right away).
+-- recorder_id is no longer used; kept so older databases don't need a destructive migration.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS recorder_id INTEGER REFERENCES recorders(id) ON DELETE SET NULL;
 UPDATE users SET role = 'set_director' WHERE role = 'staff';
 

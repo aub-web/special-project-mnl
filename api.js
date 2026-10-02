@@ -120,13 +120,12 @@ app.post('/api/auth/password', wrap(async (req) => {
 }));
 
 // ---------- Users (admin) ----------
-// email_recorder_*: the recorder whose email matches this login — the suggested link when approving a recorder.
+// email_recorders: recorders whose sheet email matches this login — that's who a Recorder login sees.
 app.get('/api/users', requireAdmin, wrap(() => q(`
-  SELECT ${PUBLIC_USER.split(', ').map((c) => 'u.' + c).join(', ')}, lr.name AS recorder_name,
-         er.id AS email_recorder_id, er.name AS email_recorder_name
+  SELECT ${PUBLIC_USER.split(', ').map((c) => 'u.' + c).join(', ')},
+         (SELECT string_agg(name, ', ' ORDER BY name) FROM recorders r WHERE lower(r.email) = lower(u.email)) AS email_recorders,
+         (SELECT COUNT(*)::int FROM recorders r WHERE lower(r.email) = lower(u.email)) AS email_recorder_count
   FROM users u
-  LEFT JOIN recorders lr ON lr.id = u.recorder_id
-  LEFT JOIN LATERAL (SELECT id, name FROM recorders WHERE lower(email) = lower(u.email) ORDER BY id LIMIT 1) er ON TRUE
   ORDER BY u.approved, u.name`)));
 app.get('/api/users/pending-count', wrap(async (req) =>
   req.user.role === 'admin' ? one('SELECT COUNT(*)::int AS n FROM users WHERE NOT approved') : { n: 0 }));
@@ -139,35 +138,44 @@ app.delete('/api/users/:id', requireAdmin, wrap(async (req) => {
   return { ok: true };
 }));
 app.post('/api/users', requireAdmin, wrap(async (req) => {
-  const { email, name, password, role = 'set_director', recorder_id } = req.body;
+  const { email, name, password, role = 'set_director' } = req.body;
   if (!/^\S+@\S+\.\S+$/.test(email || '')) throw fail('Valid email is required');
   if (String(password || '').length < 10) throw fail('Password must be at least 10 characters');
   if (!ROLES.includes(role)) throw fail('Unknown role');
-  if (role === 'recorder' && !recorder_id) throw fail('Pick which recorder this login belongs to');
   if (await one('SELECT 1 FROM users WHERE lower(email) = lower($1)', [email])) throw fail('That email already has an account');
-  return one(`INSERT INTO users (email, name, password_hash, role, recorder_id) VALUES ($1,$2,$3,$4,$5) RETURNING ${PUBLIC_USER}`,
-    [email.trim(), (name || email).trim(), await hashPassword(password), role, role === 'recorder' ? Number(recorder_id) : null]);
+  return one(`INSERT INTO users (email, name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING ${PUBLIC_USER}`,
+    [email.trim(), (name || email).trim(), await hashPassword(password), role]);
 }));
 app.put('/api/users/:id', requireAdmin, wrap(async (req) => {
   const id = Number(req.params.id);
   const body = { ...req.body };
   if (id === req.user.id && (body.active === false || (body.role && body.role !== 'admin'))) throw fail("You can't demote or disable yourself");
   if (body.role !== undefined && !ROLES.includes(body.role)) throw fail('Unknown role');
-  if ('recorder_id' in body) body.recorder_id = body.recorder_id ? Number(body.recorder_id) : null;
-  if (body.role === 'recorder' && !body.recorder_id) throw fail('Pick which recorder this login belongs to');
-  if (body.role && body.role !== 'recorder') body.recorder_id = null;
   if (body.password) {
     if (String(body.password).length < 10) throw fail('Password must be at least 10 characters');
     body.password_hash = await hashPassword(body.password);
   }
-  await updateFields('users', id, body, ['name', 'email', 'role', 'active', 'approved', 'password_hash', 'recorder_id']);
+  // Recorder logins are linked by email (see recorderForEmail), so there's no recorder_id to set.
+  await updateFields('users', id, body, ['name', 'email', 'role', 'active', 'approved', 'password_hash']);
   return one(`SELECT ${PUBLIC_USER} FROM users WHERE id = $1`, [id]);
 }));
 
 // ---------- My hours (recorder role) ----------
+// A recorder login is linked automatically: it shows the recorder whose email (from the recorder sheet)
+// matches the login email. Ambiguous emails are refused rather than guessed.
+async function recorderForEmail(email) {
+  const matches = await q('SELECT id, name FROM recorders WHERE lower(email) = lower($1)', [email]);
+  if (!matches.length) {
+    throw fail(`No recorder in the recorder sheet uses ${email}. Ask the studio admin to put this email on your row in the sheet and sync.`, 404);
+  }
+  if (matches.length > 1) {
+    throw fail(`${email} is listed for more than one recorder (${matches.map((m) => m.name).join(', ')}). Ask the studio admin to fix the recorder sheet.`, 409);
+  }
+  return matches[0].id;
+}
+
 app.get('/api/me/recorder', wrap(async (req) => {
-  const rid = req.user.recorder_id;
-  if (!rid) throw fail('Your login is not linked to a recorder yet. Ask an admin to link it.', 404);
+  const rid = await recorderForEmail(req.user.email);
   const [profile, sessions, periods] = await Promise.all([
     one(`SELECT id, name, email, contact, payment_method, payout_account_no, contract, contract_hard_copy FROM recorders WHERE id = $1`, [rid]),
     q(`${SESSION_SELECT} WHERE s.recorder_id = $1 ORDER BY s.date DESC`, [rid]),
@@ -235,7 +243,6 @@ app.post('/api/recorders/:id/merge', wrap(async (req) => {
     await q('UPDATE payments SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q('UPDATE followups SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q('UPDATE recorder_aliases SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
-    await q('UPDATE users SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q(`UPDATE recorders SET app_account = COALESCE(app_account, $2), payout_account_no = COALESCE(payout_account_no, $3),
              payout_account_name = COALESCE(payout_account_name, $4), contact = COALESCE(contact, $5) WHERE id = $1`,
       [into, old.app_account, old.payout_account_no, old.payout_account_name, old.contact], c);

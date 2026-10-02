@@ -912,19 +912,26 @@ const ROLE_OPTIONS = [
 
 async function users() {
   if (!isAdmin()) { view.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
-  const [all, { recorders: recs }] = await Promise.all([api('/users'), lookups()]);
+  const all = await api('/users');
   const pending = all.filter((u) => !u.approved);
   const list = all.filter((u) => u.approved);
-  const recOptions = [['', '— choose recorder —'], ...recs.map((r) => [r.id, r.name + (r.email ? ` (${r.email})` : '')])];
+  // Recorder logins are linked automatically: the recorder whose sheet email equals the login email.
+  const emailMatch = (u) => !u.email_recorder_count
+    ? '<span style="color:var(--warn)">no recorder in the sheet has this email</span>'
+    : u.email_recorder_count > 1
+      ? `<span style="color:var(--warn)">email used by ${u.email_recorder_count} recorders (${esc(u.email_recorders)}) — fix the sheet</span>`
+      : `→ ${esc(u.email_recorders)}`;
+  const linkNote = (u) => `<p class="muted" style="margin:0;font-size:13px">As a <b>Recorder</b>, this login sees only the recorder whose
+    sheet email is <b>${esc(u.email)}</b>: ${emailMatch(u)}.</p>`;
   const roleCell = (u) => `<span class="pill ${u.role === 'admin' ? 'accent' : ''}">${esc(ROLE_LABEL[u.role] || u.role)}</span>${
-    u.role === 'recorder' ? `<div class="muted" style="font-size:12px">${u.recorder_name ? '→ ' + esc(u.recorder_name) : '<span style="color:var(--warn)">not linked</span>'}</div>` : ''}`;
+    u.role === 'recorder' ? `<div class="muted" style="font-size:12px">${emailMatch(u)}</div>` : ''}`;
   view.innerHTML = `
     <div class="head"><div><h1>Users</h1><p>People sign up on the sign-in page; approve them here and choose what they can see.</p></div>
       <button class="primary" id="us-new">+ Add user</button></div>
     ${pending.length ? `<div class="section-head"><h2>Waiting for approval <span class="badge">${pending.length}</span></h2></div>
     <div class="table-wrap" style="margin-bottom:18px"><table><thead><tr><th>Name</th><th>Email</th><th>Matches recorder</th><th>Signed up</th><th></th></tr></thead><tbody>
     ${pending.map((u) => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(u.email)}</td>
-      <td>${u.email_recorder_name ? `<span class="pill ok">${esc(u.email_recorder_name)}</span>` : '<span class="muted">no recorder with this email</span>'}</td>
+      <td>${u.email_recorder_count === 1 ? `<span class="pill ok">${esc(u.email_recorders)}</span>` : `<span style="font-size:12px">${emailMatch(u)}</span>`}</td>
       <td>${new Date(u.created_at).toLocaleString()}</td>
       <td class="num"><button class="primary" data-approve="${u.id}">Approve</button> <button class="ghost danger" data-reject="${u.id}">Reject</button></td></tr>`).join('')}
     </tbody></table></div>` : ''}
@@ -936,12 +943,7 @@ async function users() {
       <td class="num"><button class="ghost" data-edit="${u.id}">Edit</button></td></tr>`).join('')}
     </tbody></table></div>`;
 
-  // Recorder link is only needed (and required) for the recorder role.
-  const roleFields = (role, recorderId) => [
-    { name: 'role', label: 'Role', type: 'select', full: true, options: ROLE_OPTIONS, value: role },
-    { name: 'recorder_id', label: 'Recorder this login belongs to (Recorder role only)', type: 'select', full: true, options: recOptions, value: recorderId ?? '' },
-  ];
-  const roleBody = (v) => ({ ...v, recorder_id: v.role === 'recorder' ? v.recorder_id || null : null });
+  const roleFields = (role) => [{ name: 'role', label: 'Role', type: 'select', full: true, options: ROLE_OPTIONS, value: role }];
 
   view.addEventListener('click', async (e) => {
     const approveId = e.target.dataset.approve, rejectId = e.target.dataset.reject;
@@ -950,12 +952,10 @@ async function users() {
     try {
       if (approveId) {
         const v = await modal({ title: `Approve ${u.name}`, submit: 'Approve',
-          extra: `<p class="muted" style="margin:0">${esc(u.email)}${u.email_recorder_name
-            ? ` matches recorder <b>${esc(u.email_recorder_name)}</b> — as a Recorder they'll see only that person's hours and pay.`
-            : ' doesn\'t match any recorder\'s email.'}</p>`,
-          fields: roleFields(u.email_recorder_id ? 'recorder' : 'set_director', u.email_recorder_id) });
+          extra: linkNote(u),
+          fields: roleFields(u.email_recorder_count === 1 ? 'recorder' : 'set_director') });
         if (!v) return;
-        await api('/users/' + u.id, { method: 'PUT', body: { approved: true, ...roleBody(v) } });
+        await api('/users/' + u.id, { method: 'PUT', body: { approved: true, ...v } });
         toast(`${u.name} approved`);
       } else {
         if (!confirm(`Reject and delete the sign-up from ${u.name} (${u.email})?`)) return;
@@ -973,19 +973,19 @@ async function users() {
       ...roleFields('set_director'),
     ] });
     if (!v) return;
-    try { await api('/users', { method: 'POST', body: roleBody(v) }); toast('User added'); render(); } catch (e) { toast(e.message, true); }
+    try { await api('/users', { method: 'POST', body: v }); toast('User added'); render(); } catch (e) { toast(e.message, true); }
   };
   view.addEventListener('click', async (e) => {
     const id = e.target.dataset.edit; if (!id) return;
     const u = list.find((x) => String(x.id) === id);
-    const v = await modal({ title: 'Edit user', fields: [
+    const v = await modal({ title: 'Edit user', extra: linkNote(u), fields: [
       { name: 'name', label: 'Name', value: u.name, required: true }, { name: 'email', label: 'Email', type: 'email', value: u.email, required: true },
-      ...roleFields(u.role, u.recorder_id ?? u.email_recorder_id),
+      ...roleFields(u.role),
       { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Disabled']], value: String(u.active) },
       { name: 'password', label: 'Reset password (leave blank to keep)', type: 'password' },
     ] });
     if (!v) return;
-    const body = { ...roleBody(v), active: v.active === 'true' };
+    const body = { ...v, active: v.active === 'true' };
     if (!body.password) delete body.password;
     try { await api('/users/' + id, { method: 'PUT', body }); toast('Saved'); render(); } catch (err) { toast(err.message, true); }
   });
