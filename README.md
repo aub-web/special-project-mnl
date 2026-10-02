@@ -25,12 +25,27 @@ npm start                      # http://localhost:3000 (reads .env)
 
 Tables are created automatically on first request.
 
+## Roles
+
+| Role | Can open | Notes |
+|---|---|---|
+| **Admin** | Everything | Approves sign-ups, manages users, rates, syncs |
+| **SDR** | Dashboard, Businesses | Can edit business profiles and shifts; no recorder details or sessions |
+| **Set Director** | Log hours, Sessions | Never receives amounts or rates from the server; can edit/delete only sessions they logged |
+| **Recorder** | My hours | Only the recorder their login is linked to: own sessions, pay periods, payment status |
+
+The rules are enforced in `api.js` (the access matrix and money stripping), not only hidden in the UI.
+
+People sign up on the sign-in page, and every new account waits for an admin to approve it.
+When a sign-up's email matches a recorder's email from the recorder sheet, the Users page suggests linking them as that recorder.
+There's no email verification, which is why recorder accounts still need approval: someone could otherwise sign up with a recorder's email.
+
 ## Logins
 
 Create the first admin from your computer. You'll be asked for the password, so it never goes into shell history:
 
 ```bash
-npm run add-user -- you@atlascapture.io "Your Name" admin
+npm run add-user -- you@atlascapture.io "Your Name" admin   # or sdr / set_director
 ```
 
 After that, admins add teammates on the **Users** page. Staff can log hours, edit sessions and mark payments.

@@ -42,6 +42,7 @@
 
 /* ---------- Base ---------- */
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; font: 14px/1.45 Inter, system-ui, sans-serif; color: var(--ink); background: var(--bg);

@@ -186,6 +186,9 @@ ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_hard_copy TEXT;   -- "do
 
 -- Self sign-up: new accounts wait for an admin to approve them.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
+-- Roles: admin | sdr | set_director | recorder. A recorder login sees only the recorder it's linked to.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS recorder_id INTEGER REFERENCES recorders(id) ON DELETE SET NULL;
+UPDATE users SET role = 'set_director' WHERE role = 'staff';
 
 INSERT INTO settings (key, value) VALUES ('rate_usd', '2.5'), ('fx_rate', '60'), ('ot_rate_php', '150'),
   ('admin_emails', 'aubrey@atlascapture.io'),   -- these emails become admins (pre-approved) when they sign up

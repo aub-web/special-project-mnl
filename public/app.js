@@ -81,6 +81,19 @@ function showLogin() {
   });
   draw();
 }
+// ---------- roles ----------
+// Which pages each role can open (admin: all). The server enforces the same rules.
+const ROLE_ROUTES = {
+  sdr: ['', 'businesses', 'business', 'settings'],
+  set_director: ['log', 'sessions', 'settings'],
+  recorder: ['me', 'settings'],
+};
+const ROLE_HOME = { admin: '', sdr: '', set_director: 'log', recorder: 'me' };
+const ROLE_LABEL = { admin: 'Admin', sdr: 'SDR', set_director: 'Set Director', recorder: 'Recorder' };
+const canSee = (route) => me?.role === 'admin' ? route !== 'me' : (ROLE_ROUTES[me?.role] || []).includes(route);
+const isAdmin = () => me?.role === 'admin';
+const showMoney = () => me?.role !== 'set_director';
+
 async function boot() {
   try {
     me = await api('/auth/me');
@@ -95,9 +108,10 @@ async function boot() {
     return;
   }
   document.body.classList.remove('logged-out');
-  $('#nav-users').hidden = me.role !== 'admin';
+  document.querySelectorAll('#nav a').forEach((a) => { a.hidden = !canSee(a.dataset.route); });
   $('#me-name').textContent = me.name;
-  $('#me-role').textContent = me.role;
+  $('#me-role').textContent = ROLE_LABEL[me.role] || me.role;
+  cache.recorders = null;
   render();
 }
 
@@ -169,7 +183,9 @@ function modal({ title, fields, submit = 'Save', extra = '' }) {
 const cache = {};
 async function lookups(force = false) {
   if (force || !cache.recorders) {
-    [cache.recorders, cache.locations, cache.settings] = await Promise.all([api('/recorders'), api('/locations'), api('/settings')]);
+    // SDRs can't list recorders (they only work with businesses).
+    [cache.recorders, cache.locations, cache.settings] = await Promise.all([
+      me?.role === 'sdr' ? [] : api('/recorders'), api('/locations'), api('/settings')]);
   }
   let dl = $('#dl-recorders');
   if (!dl) { dl = document.createElement('div'); dl.id = 'dl-wrap'; document.body.append(dl); }
@@ -181,11 +197,15 @@ async function lookups(force = false) {
 const CATEGORIES = ['Studio', 'Home Shift', 'OT'];
 
 // ---------- routes ----------
-const routes = { '': dashboard, log, sessions, periods, period, recorders, locations, followups, settings, users, businesses, business };
+const routes = { '': dashboard, log, sessions, periods, period, recorders, locations, followups, settings, users, businesses, business, me: myHours };
 
 async function render() {
   if (!me) return;
   const [route, ...args] = location.hash.replace(/^#\/?/, '').split('?')[0].split('/');
+  if (!routes[route] || !canSee(route)) {
+    const home = ROLE_HOME[me.role] ?? '';
+    if (route !== home) { location.hash = '#/' + home; return; }
+  }
   const navRoute = { period: 'periods', business: 'businesses' }[route] ?? route;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === navRoute));
   // Fresh element per page so event listeners from the previous page don't pile up.
@@ -201,6 +221,7 @@ async function render() {
   refreshBadge();
 }
 async function refreshBadge() {
+  if (!isAdmin()) return;
   const fu = await api('/followups').catch(() => []);
   const n = fu.filter((f) => f.status !== 'Resolved').length;
   const b = $('#fu-badge');
@@ -245,14 +266,14 @@ async function dashboard() {
   const maxL = Math.max(1, ...d.byLocation.map((l) => l.hours));
   view.innerHTML = `
     <div class="head"><div><h1>Dashboard</h1><p>${fmtDate(t.first_date, { month: 'short', day: 'numeric', year: 'numeric' })} – ${fmtDate(t.last_date, { month: 'short', day: 'numeric', year: 'numeric' })}</p></div>
-      <a class="btn primary" href="#/log">+ Log hours</a></div>
+      ${canSee('log') ? '<a class="btn primary" href="#/log">+ Log hours</a>' : ''}</div>
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(t.hours)}</div><div class="sub">${t.sessions} sessions</div></div>
       <div class="card kpi"><div class="label">Recorder payout</div><div class="value">${php(t.php)}</div><div class="sub">${usd(t.usd)}</div></div>
       <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(bt.payout)}</div><div class="sub">${hrs(bt.shifts)} shifts · ${bt.businesses} businesses</div></div>
       <div class="card kpi"><div class="label">Recorders</div><div class="value">${t.recorders}</div><div class="sub">across ${t.locations} locations</div></div>
-      <div class="card kpi"><div class="label">Needs attention</div><div class="value">${d.openFollowups}</div>
-        <div class="sub"><a href="#/followups">follow-ups</a> · ${d.openPeriods} <a href="#/periods">open period(s)</a></div></div>
+      ${isAdmin() ? `<div class="card kpi"><div class="label">Needs attention</div><div class="value">${d.openFollowups}</div>
+        <div class="sub"><a href="#/followups">follow-ups</a> · ${d.openPeriods} <a href="#/periods">open period(s)</a></div></div>` : ''}
     </div>
     <div class="section-head"><h2>Businesses</h2>
       <span class="muted">${biz.synced_at ? `Synced from Google Sheet ${new Date(biz.synced_at).toLocaleString()}` : 'Not synced yet'} · <a href="#/businesses">Manage</a></span></div>
@@ -273,7 +294,7 @@ async function dashboard() {
     </div>
     <div class="card" style="margin-top:14px"><h2>Top recorders</h2>
       <table><thead><tr><th>Name</th><th class="num">Days</th><th class="num">Hours</th><th class="num">Earned</th></tr></thead><tbody>
-      ${d.topRecorders.map((r) => `<tr><td><a href="#/sessions/${r.id}">${esc(r.name)}</a></td><td class="num">${r.days}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
+      ${d.topRecorders.map((r) => `<tr><td>${canSee('sessions') ? `<a href="#/sessions/${r.id}">${esc(r.name)}</a>` : esc(r.name)}</td><td class="num">${r.days}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
       </tbody></table></div>`;
 }
 
@@ -282,7 +303,7 @@ async function log() {
   const { settings: s } = await lookups();
   const state = { rows: Array.from({ length: 6 }, () => ({ recorder: '', hours: '', notes: '' })) };
   view.innerHTML = `
-    <div class="head"><div><h1>Log hours</h1><p>One day at one location — like a daily sheet. Rate ${usd(s.rate_usd)}/h · ₱${s.fx_rate}/$</p></div></div>
+    <div class="head"><div><h1>Log hours</h1><p>One day at one location — like a daily sheet.${showMoney() ? ` Rate ${usd(s.rate_usd)}/h · ₱${s.fx_rate}/$` : ''}</p></div></div>
     <div class="card">
       <div class="toolbar">
         <label class="f">Date<input type="date" id="lg-date" value="${today()}"></label>
@@ -291,7 +312,7 @@ async function log() {
       </div>
       <div class="log-rows" id="lg-rows"></div>
       <div style="margin-top:8px"><button id="lg-add" class="ghost">+ Add row</button></div>
-      <div class="sumbar"><span class="muted">Total</span><b id="lg-h">0 h</b><b id="lg-p">₱0.00</b><button class="primary" id="lg-save">Save day</button></div>
+      <div class="sumbar"><span class="muted">Total</span><b id="lg-h">0 h</b>${showMoney() ? '<b id="lg-p">₱0.00</b>' : ''}<button class="primary" id="lg-save">Save day</button></div>
     </div>`;
   const rowsEl = $('#lg-rows');
   const draw = () => {
@@ -306,7 +327,7 @@ async function log() {
   const totals = () => {
     const h = state.rows.reduce((a, r) => a + (Number(r.hours) || 0), 0);
     $('#lg-h').textContent = hrs(h) + ' h';
-    $('#lg-p').textContent = php(h * s.rate_usd * s.fx_rate);
+    if (showMoney()) $('#lg-p').textContent = php(h * s.rate_usd * s.fx_rate);
   };
   rowsEl.addEventListener('input', (e) => {
     const i = e.target.closest('.log-row')?.dataset.i;
@@ -340,6 +361,7 @@ async function sessions(recorderId = '') {
   const f = { from: params.get('from') || '', to: params.get('to') || '', recorder_id: recorderId, location_id: '', category: '', q: '' };
   view.innerHTML = `
     <div class="head"><div><h1>Sessions</h1><p id="ss-sum" class="muted"></p></div><a class="btn primary" href="#/log">+ Log hours</a></div>
+    ${isAdmin() ? '' : '<p class="muted" style="margin:-8px 0 12px;font-size:13px">You can edit or delete the sessions you logged.</p>'}
     <div class="toolbar">
       <label class="f">From<input type="date" data-f="from" value="${f.from}"></label>
       <label class="f">To<input type="date" data-f="to" value="${f.to}"></label>
@@ -352,15 +374,20 @@ async function sessions(recorderId = '') {
   let data = [];
   const load = async () => {
     data = await api('/sessions?' + qs(f));
-    const H = data.reduce((a, s) => a + s.hours, 0), P = data.reduce((a, s) => a + s.php, 0);
-    $('#ss-sum').textContent = `${data.length} sessions · ${hrs(H)} h · ${php(P)}`;
-    $('#ss-table').innerHTML = data.length ? `<table><thead><tr><th>Date</th><th>Recorder</th><th>Location</th><th>Category</th><th class="num">Hours</th><th class="num">USD</th><th class="num">PHP</th><th>Notes</th><th></th></tr></thead><tbody>
+    const money = showMoney();
+    const H = data.reduce((a, s) => a + s.hours, 0);
+    const U = money ? data.reduce((a, s) => a + s.usd, 0) : 0, P = money ? data.reduce((a, s) => a + s.php, 0) : 0;
+    const editable = (s) => isAdmin() || s.created_by === me.id;
+    $('#ss-sum').textContent = `${data.length} sessions · ${hrs(H)} h${money ? ` · ${php(P)}` : ''}`;
+    $('#ss-table').innerHTML = data.length ? `<table><thead><tr><th>Date</th><th>Recorder</th><th>Location</th><th>Category</th><th class="num">Hours</th>${money ? '<th class="num">USD</th><th class="num">PHP</th>' : ''}<th>Notes</th><th></th></tr></thead><tbody>
       ${data.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td>${esc(s.recorder)}</td><td>${esc(s.location || '—')}</td>
         <td><span class="pill ${s.category === 'Studio' ? 'accent' : s.category === 'OT' ? 'warn' : ''}">${esc(s.category)}</span>${s.shift ? ` <span class="muted" style="font-size:12px">${esc(s.shift)}</span>` : ''}</td>
-        <td class="num">${hrs(s.hours)}</td><td class="num">${usd(s.usd)}</td><td class="num">${php(s.php)}</td>
+        <td class="num">${hrs(s.hours)}</td>${money ? `<td class="num">${usd(s.usd)}</td><td class="num">${php(s.php)}</td>` : ''}
         <td class="muted">${esc(s.notes || '')}</td>
-        <td class="num"><button class="ghost" data-edit="${s.id}">Edit</button><button class="ghost danger" data-del="${s.id}">Delete</button></td></tr>`).join('')}
-      </tbody></table>` : '<div class="empty">No sessions match these filters.</div>';
+        <td class="num">${editable(s) ? `<button class="ghost" data-edit="${s.id}">Edit</button><button class="ghost danger" data-del="${s.id}">Delete</button>` : ''}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td>Total · ${data.length} session${data.length === 1 ? '' : 's'}</td><td></td><td></td><td></td>
+        <td class="num">${hrs(H)} h</td>${money ? `<td class="num">${usd(U)}</td><td class="num">${php(P)}</td>` : ''}<td></td><td></td></tr></tfoot></table>`
+      : '<div class="empty">No sessions match these filters.</div>';
   };
   view.querySelector('.toolbar').addEventListener('input', (e) => {
     const k = e.target.dataset.f; if (!k) return;
@@ -382,8 +409,10 @@ async function sessions(recorderId = '') {
       { name: 'hours', label: 'Hours', type: 'number', step: '0.01', value: s.hours, required: true },
       { name: 'location', label: 'Location', value: s.location || '', list: 'dl-locations' },
       { name: 'category', label: 'Category', type: 'select', options: CATEGORIES, value: s.category },
-      { name: 'rate_usd', label: 'Rate (USD/h)', type: 'number', step: '0.01', value: s.rate_usd },
-      { name: 'fx_rate', label: 'PHP per USD', type: 'number', step: '0.01', value: s.fx_rate },
+      ...(isAdmin() ? [
+        { name: 'rate_usd', label: 'Rate (USD/h)', type: 'number', step: '0.01', value: s.rate_usd },
+        { name: 'fx_rate', label: 'PHP per USD', type: 'number', step: '0.01', value: s.fx_rate },
+      ] : []),
       { name: 'shift', label: 'Shift', value: s.shift || '', full: true },
       { name: 'notes', label: 'Notes', type: 'textarea', value: s.notes || '', full: true },
     ] });
@@ -739,7 +768,7 @@ async function business(id) {
   const row = (k, v) => `<dt>${k}</dt><dd>${v || '<span class="muted">—</span>'}</dd>`;
   view.innerHTML = `
     <div class="head"><div><a href="#/businesses" class="muted">← Businesses</a><h1>${esc(b.name)}</h1>
-      <p>${b.location ? `Recorders log hours here as <a href="#/sessions?${qs({ from: b.first_session, to: b.last_session })}">${esc(b.location)}</a>` : 'No recorder location linked'}</p></div>
+      <p>${b.location ? `Recorders log hours here as ${canSee('sessions') ? `<a href="#/sessions?${qs({ from: b.first_session, to: b.last_session })}">${esc(b.location)}</a>` : `<b>${esc(b.location)}</b>`}` : 'No recorder location linked'}</p></div>
       <div style="display:flex;gap:8px"><button id="bz-edit">Edit profile</button><button class="primary" id="bz-shift">+ Add shift</button></div></div>
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(b.payout)}</div><div class="sub">${hrs(b.shifts)} shifts</div></div>
@@ -794,21 +823,21 @@ async function business(id) {
 // ---------- Settings ----------
 async function settings() {
   const s = await api('/settings');
-  const admin = me.role === 'admin';
+  const admin = isAdmin();
   view.innerHTML = `
-    <div class="head"><div><h1>Settings</h1><p>Defaults for new sessions. Existing sessions keep the rate they were logged with.</p></div></div>
+    <div class="head"><div><h1>Settings</h1><p>${admin ? 'Defaults for new sessions. Existing sessions keep the rate they were logged with.' : `Signed in as ${esc(me.email)} · ${ROLE_LABEL[me.role]}`}</p></div></div>
     <div class="grid" style="max-width:520px">
-      <form id="st-form" class="card grid">
-        <h2>Rates${admin ? '' : ' <span class="muted" style="font-weight:400">(admins can change)</span>'}</h2>
-        <label class="f">Recording rate (USD per hour)<input name="rate_usd" type="number" step="0.01" value="${s.rate_usd}" ${admin ? '' : 'disabled'}></label>
-        <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}" ${admin ? '' : 'disabled'}></label>
+      ${admin ? `<form id="st-form" class="card grid">
+        <h2>Rates & sources</h2>
+        <label class="f">Recording rate (USD per hour)<input name="rate_usd" type="number" step="0.01" value="${s.rate_usd}"></label>
+        <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}"></label>
         <p class="muted" style="margin:0">= <b id="st-php">${php(s.rate_usd * s.fx_rate)}</b> per hour</p>
-        <label class="f">Business rate (PHP per shift × scene)<input name="business_rate_php" type="number" step="0.01" value="${s.business_rate_php}" ${admin ? '' : 'disabled'}></label>
-        <label class="f">Business Google Sheet (ID or link)<input name="business_sheet_id" value="${esc(s.business_sheet_id)}" ${admin ? '' : 'disabled'}></label>
-        <label class="f">Recorder Google Sheet (ID or link)<input name="recorder_sheet_id" value="${esc(s.recorder_sheet_id)}" ${admin ? '' : 'disabled'}></label>
-        <label class="f">Auto-admin emails (become admin when they sign up)<input name="admin_emails" value="${esc(s.admin_emails)}" ${admin ? '' : 'disabled'}></label>
-        ${admin ? '<div><button class="primary">Save rates</button></div>' : ''}
-      </form>
+        <label class="f">Business rate (PHP per shift × scene)<input name="business_rate_php" type="number" step="0.01" value="${s.business_rate_php}"></label>
+        <label class="f">Business Google Sheet (ID or link)<input name="business_sheet_id" value="${esc(s.business_sheet_id)}"></label>
+        <label class="f">Recorder Google Sheet (ID or link)<input name="recorder_sheet_id" value="${esc(s.recorder_sheet_id)}"></label>
+        <label class="f">Auto-admin emails (become admin when they sign up)<input name="admin_emails" value="${esc(s.admin_emails)}"></label>
+        <div><button class="primary">Save</button></div>
+      </form>` : ''}
       <form id="pw-form" class="card grid">
         <h2>Change my password</h2>
         <label class="f">Current password<input name="current" type="password" autocomplete="current-password" required></label>
@@ -817,8 +846,8 @@ async function settings() {
       </form>
     </div>`;
   const f = $('#st-form');
-  f.oninput = () => ($('#st-php').textContent = php(f.rate_usd.value * f.fx_rate.value));
-  f.onsubmit = async (e) => {
+  if (f) f.oninput = () => ($('#st-php').textContent = php(f.rate_usd.value * f.fx_rate.value));
+  if (f) f.onsubmit = async (e) => {
     e.preventDefault();
     try {
       await api('/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) });
@@ -834,27 +863,86 @@ async function settings() {
   };
 }
 
+// ---------- My hours (recorder role) ----------
+async function myHours() {
+  let d;
+  try { d = await api('/me/recorder'); }
+  catch (e) { view.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
+  const { profile: p, sessions: list, periods } = d;
+  const H = list.reduce((a, s) => a + s.hours, 0), P = list.reduce((a, s) => a + s.php, 0);
+  const paid = periods.reduce((a, x) => a + (x.payment_status === 'Paid' ? x.paid_php : 0), 0);
+  const payPill = (x) => !x.payment_status ? '<span class="pill">Not paid yet</span>'
+    : `<span class="pill ${x.payment_status === 'Paid' ? 'ok' : 'warn'}">${esc(x.payment_status)}</span>${x.paid_at ? ` <span class="muted" style="font-size:12px">${fmtDate(x.paid_at)}</span>` : ''}`;
+  view.innerHTML = `
+    <div class="head"><div><h1>Hi, ${esc(p.name.split(' ')[0])}</h1><p>Your recording hours and pay</p></div></div>
+    <div class="grid kpis">
+      <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(H)}</div><div class="sub">${list.length} sessions</div></div>
+      <div class="card kpi"><div class="label">Total earned</div><div class="value">${php(P)}</div></div>
+      <div class="card kpi"><div class="label">Marked paid</div><div class="value">${php(paid)}</div></div>
+      <div class="card kpi"><div class="label">Last session</div><div class="value" style="font-size:18px">${fmtDate(list[0]?.date, { month: 'short', day: 'numeric', year: 'numeric' })}</div></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h2>Pay periods</h2>
+        ${periods.length ? `<div style="overflow:auto"><table><thead><tr><th>Period</th><th class="num">Hours</th><th class="num">Earned</th><th>Payment</th></tr></thead><tbody>
+        ${periods.map((x) => `<tr><td><b>${esc(x.name)}</b><div class="muted" style="font-size:12px">${fmtDate(x.start_date)} – ${fmtDate(x.end_date)}</div></td>
+          <td class="num">${hrs(x.hours)}</td><td class="num">${php(x.php)}</td><td>${payPill(x)}</td></tr>`).join('')}
+        </tbody></table></div>` : '<p class="muted">No pay periods yet.</p>'}</div>
+      <div class="card"><h2>My details</h2><dl class="profile">
+        <dt>Email</dt><dd>${esc(p.email || '—')}</dd>
+        <dt>Contact</dt><dd>${esc(p.contact || '—')}</dd>
+        <dt>Payment</dt><dd>${esc(p.payment_method || '—')} ${maskAcct(p.payout_account_no)}</dd>
+        <dt>Contract</dt><dd>${contractPill(p)}</dd>
+      </dl><p class="muted" style="font-size:12px;margin:12px 0 0">Something wrong? Tell the studio admin so they can update it.</p></div>
+    </div>
+    <div class="section-head" style="margin-top:14px"><h2>My sessions</h2></div>
+    <div class="table-wrap">${list.length ? `<table><thead><tr><th>Date</th><th>Location</th><th>Category</th><th class="num">Hours</th><th class="num">Earned</th></tr></thead><tbody>
+      ${list.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td>${esc(s.location || '—')}</td>
+        <td><span class="pill">${esc(s.category)}</span></td><td class="num">${hrs(s.hours)}</td><td class="num">${php(s.php)}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td>Total</td><td></td><td></td><td class="num">${hrs(H)} h</td><td class="num">${php(P)}</td></tr></tfoot></table>`
+      : '<div class="empty">No sessions yet.</div>'}</div>`;
+}
+
 // ---------- Users (admin) ----------
+const ROLE_OPTIONS = [
+  ['admin', 'Admin — everything'],
+  ['sdr', 'SDR — dashboard & businesses'],
+  ['set_director', 'Set Director — log hours (no amounts)'],
+  ['recorder', 'Recorder — only their own hours & pay'],
+];
+
 async function users() {
-  if (me.role !== 'admin') { view.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
-  const all = await api('/users');
+  if (!isAdmin()) { view.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
+  const [all, { recorders: recs }] = await Promise.all([api('/users'), lookups()]);
   const pending = all.filter((u) => !u.approved);
   const list = all.filter((u) => u.approved);
+  const recOptions = [['', '— choose recorder —'], ...recs.map((r) => [r.id, r.name + (r.email ? ` (${r.email})` : '')])];
+  const roleCell = (u) => `<span class="pill ${u.role === 'admin' ? 'accent' : ''}">${esc(ROLE_LABEL[u.role] || u.role)}</span>${
+    u.role === 'recorder' ? `<div class="muted" style="font-size:12px">${u.recorder_name ? '→ ' + esc(u.recorder_name) : '<span style="color:var(--warn)">not linked</span>'}</div>` : ''}`;
   view.innerHTML = `
-    <div class="head"><div><h1>Users</h1><p>People sign up on the sign-in page; approve them here. Admins can also manage users and rates.</p></div>
+    <div class="head"><div><h1>Users</h1><p>People sign up on the sign-in page; approve them here and choose what they can see.</p></div>
       <button class="primary" id="us-new">+ Add user</button></div>
     ${pending.length ? `<div class="section-head"><h2>Waiting for approval <span class="badge">${pending.length}</span></h2></div>
-    <div class="table-wrap" style="margin-bottom:18px"><table><thead><tr><th>Name</th><th>Email</th><th>Signed up</th><th></th></tr></thead><tbody>
-    ${pending.map((u) => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(u.email)}</td><td>${new Date(u.created_at).toLocaleString()}</td>
+    <div class="table-wrap" style="margin-bottom:18px"><table><thead><tr><th>Name</th><th>Email</th><th>Matches recorder</th><th>Signed up</th><th></th></tr></thead><tbody>
+    ${pending.map((u) => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(u.email)}</td>
+      <td>${u.email_recorder_name ? `<span class="pill ok">${esc(u.email_recorder_name)}</span>` : '<span class="muted">no recorder with this email</span>'}</td>
+      <td>${new Date(u.created_at).toLocaleString()}</td>
       <td class="num"><button class="primary" data-approve="${u.id}">Approve</button> <button class="ghost danger" data-reject="${u.id}">Reject</button></td></tr>`).join('')}
     </tbody></table></div>` : ''}
     <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>
     ${list.map((u) => `<tr><td><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="pill accent">you</span>' : ''}</td><td>${esc(u.email)}</td>
-      <td><span class="pill ${u.role === 'admin' ? 'accent' : ''}">${esc(u.role)}</span></td>
+      <td>${roleCell(u)}</td>
       <td><span class="pill ${u.active ? 'ok' : ''}">${u.active ? 'Active' : 'Disabled'}</span></td>
       <td>${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—'}</td>
       <td class="num"><button class="ghost" data-edit="${u.id}">Edit</button></td></tr>`).join('')}
     </tbody></table></div>`;
+
+  // Recorder link is only needed (and required) for the recorder role.
+  const roleFields = (role, recorderId) => [
+    { name: 'role', label: 'Role', type: 'select', full: true, options: ROLE_OPTIONS, value: role },
+    { name: 'recorder_id', label: 'Recorder this login belongs to (Recorder role only)', type: 'select', full: true, options: recOptions, value: recorderId ?? '' },
+  ];
+  const roleBody = (v) => ({ ...v, recorder_id: v.role === 'recorder' ? v.recorder_id || null : null });
+
   view.addEventListener('click', async (e) => {
     const approveId = e.target.dataset.approve, rejectId = e.target.dataset.reject;
     if (!approveId && !rejectId) return;
@@ -862,10 +950,12 @@ async function users() {
     try {
       if (approveId) {
         const v = await modal({ title: `Approve ${u.name}`, submit: 'Approve',
-          extra: `<p class="muted" style="margin:0">${esc(u.email)} will be able to sign in and see all payout data.</p>`,
-          fields: [{ name: 'role', label: 'Role', type: 'select', full: true, options: [['staff', 'Staff — log hours, sessions, payments'], ['admin', 'Admin — also users and rates']] }] });
+          extra: `<p class="muted" style="margin:0">${esc(u.email)}${u.email_recorder_name
+            ? ` matches recorder <b>${esc(u.email_recorder_name)}</b> — as a Recorder they'll see only that person's hours and pay.`
+            : ' doesn\'t match any recorder\'s email.'}</p>`,
+          fields: roleFields(u.email_recorder_id ? 'recorder' : 'set_director', u.email_recorder_id) });
         if (!v) return;
-        await api('/users/' + u.id, { method: 'PUT', body: { approved: true, role: v.role } });
+        await api('/users/' + u.id, { method: 'PUT', body: { approved: true, ...roleBody(v) } });
         toast(`${u.name} approved`);
       } else {
         if (!confirm(`Reject and delete the sign-up from ${u.name} (${u.email})?`)) return;
@@ -879,23 +969,23 @@ async function users() {
   $('#us-new').onclick = async () => {
     const v = await modal({ title: 'Add user', submit: 'Create', extra: pwHint, fields: [
       { name: 'name', label: 'Name', required: true }, { name: 'email', label: 'Email', type: 'email', required: true },
-      { name: 'password', label: 'Temporary password (10+ chars)', type: 'password', required: true },
-      { name: 'role', label: 'Role', type: 'select', options: [['staff', 'Staff'], ['admin', 'Admin']] },
+      { name: 'password', label: 'Temporary password (10+ chars)', type: 'password', required: true, full: true },
+      ...roleFields('set_director'),
     ] });
     if (!v) return;
-    try { await api('/users', { method: 'POST', body: v }); toast('User added'); render(); } catch (e) { toast(e.message, true); }
+    try { await api('/users', { method: 'POST', body: roleBody(v) }); toast('User added'); render(); } catch (e) { toast(e.message, true); }
   };
   view.addEventListener('click', async (e) => {
     const id = e.target.dataset.edit; if (!id) return;
     const u = list.find((x) => String(x.id) === id);
     const v = await modal({ title: 'Edit user', fields: [
       { name: 'name', label: 'Name', value: u.name, required: true }, { name: 'email', label: 'Email', type: 'email', value: u.email, required: true },
-      { name: 'role', label: 'Role', type: 'select', options: [['staff', 'Staff'], ['admin', 'Admin']], value: u.role },
+      ...roleFields(u.role, u.recorder_id ?? u.email_recorder_id),
       { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Disabled']], value: String(u.active) },
-      { name: 'password', label: 'Reset password (leave blank to keep)', type: 'password', full: true },
+      { name: 'password', label: 'Reset password (leave blank to keep)', type: 'password' },
     ] });
     if (!v) return;
-    const body = { ...v, active: v.active === 'true' };
+    const body = { ...roleBody(v), active: v.active === 'true' };
     if (!body.password) delete body.password;
     try { await api('/users/' + id, { method: 'PUT', body }); toast('Saved'); render(); } catch (err) { toast(err.message, true); }
   });

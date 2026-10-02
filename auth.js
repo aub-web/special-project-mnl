@@ -54,7 +54,7 @@ export function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure()}`);
 }
 
-export const PUBLIC_USER = 'id, email, name, role, active, approved, created_at, last_login_at';
+export const PUBLIC_USER = 'id, email, name, role, active, approved, recorder_id, created_at, last_login_at';
 
 /** Express middleware: attaches req.user or responds 401. */
 export async function requireUser(req, res, next) {
@@ -108,5 +108,5 @@ export async function signup({ name, email, password }, adminEmails = []) {
   }
   const isAdmin = adminEmails.map((e) => e.trim().toLowerCase()).includes(email.toLowerCase());
   return one(`INSERT INTO users (email, name, password_hash, role, approved) VALUES ($1,$2,$3,$4,$5) RETURNING ${PUBLIC_USER}`,
-    [email, name, await hashPassword(password), isAdmin ? 'admin' : 'staff', isAdmin]);
+    [email, name, await hashPassword(password), isAdmin ? 'admin' : 'recorder', isAdmin]);
 }

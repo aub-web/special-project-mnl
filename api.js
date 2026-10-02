@@ -81,6 +81,30 @@ app.post('/api/auth/logout', wrap((req, res) => { clearSessionCookie(res); retur
 
 // Everything below needs a signed-in user.
 app.use('/api', requireUser);
+
+// ---------- Access matrix ----------
+//   admin         everything
+//   sdr           dashboard + businesses
+//   set_director  log hours + sessions, never sees money (amounts are stripped server-side)
+//   recorder      only their own profile, sessions and pay (/me/recorder)
+// Rules are [method, path, exact?]; '*' matches any method. Admin skips the check.
+export const ROLES = ['admin', 'sdr', 'set_director', 'recorder'];
+const ACCESS = {
+  sdr: [['GET', '/dashboard', true], ['*', '/businesses'], ['*', '/business-shifts'], ['GET', '/locations', true], ['GET', '/settings', true]],
+  set_director: [['GET', '/recorders', true], ['GET', '/locations', true], ['GET', '/sessions', true], ['POST', '/sessions/bulk', true],
+    ['PUT', '/sessions/'], ['DELETE', '/sessions/'], ['GET', '/settings', true]],
+  recorder: [['GET', '/me/recorder', true]],
+};
+const hidesMoney = (req) => req.user.role === 'set_director';
+app.use('/api', (req, res, next) => {
+  const { role } = req.user;
+  if (role === 'admin' || req.path.startsWith('/auth/')) return next();
+  const ok = (ACCESS[role] || []).some(([m, path, exact]) =>
+    (m === '*' || m === req.method) && (exact ? req.path === path : req.path.startsWith(path)));
+  if (!ok) return res.status(403).json({ error: "Your role doesn't have access to this." });
+  next();
+});
+
 app.use('/api', businessRoutes);
 app.use('/api', recorderSyncRoutes);
 app.get('/api/auth/me', wrap((req) => req.user));
@@ -96,7 +120,14 @@ app.post('/api/auth/password', wrap(async (req) => {
 }));
 
 // ---------- Users (admin) ----------
-app.get('/api/users', requireAdmin, wrap(() => q(`SELECT ${PUBLIC_USER} FROM users ORDER BY approved, name`)));
+// email_recorder_*: the recorder whose email matches this login — the suggested link when approving a recorder.
+app.get('/api/users', requireAdmin, wrap(() => q(`
+  SELECT ${PUBLIC_USER.split(', ').map((c) => 'u.' + c).join(', ')}, lr.name AS recorder_name,
+         er.id AS email_recorder_id, er.name AS email_recorder_name
+  FROM users u
+  LEFT JOIN recorders lr ON lr.id = u.recorder_id
+  LEFT JOIN LATERAL (SELECT id, name FROM recorders WHERE lower(email) = lower(u.email) ORDER BY id LIMIT 1) er ON TRUE
+  ORDER BY u.approved, u.name`)));
 app.get('/api/users/pending-count', wrap(async (req) =>
   req.user.role === 'admin' ? one('SELECT COUNT(*)::int AS n FROM users WHERE NOT approved') : { n: 0 }));
 // Reject a sign-up / remove a login. Their logged sessions stay (created_by is cleared).
@@ -108,27 +139,58 @@ app.delete('/api/users/:id', requireAdmin, wrap(async (req) => {
   return { ok: true };
 }));
 app.post('/api/users', requireAdmin, wrap(async (req) => {
-  const { email, name, password, role = 'staff' } = req.body;
+  const { email, name, password, role = 'set_director', recorder_id } = req.body;
   if (!/^\S+@\S+\.\S+$/.test(email || '')) throw fail('Valid email is required');
   if (String(password || '').length < 10) throw fail('Password must be at least 10 characters');
+  if (!ROLES.includes(role)) throw fail('Unknown role');
+  if (role === 'recorder' && !recorder_id) throw fail('Pick which recorder this login belongs to');
   if (await one('SELECT 1 FROM users WHERE lower(email) = lower($1)', [email])) throw fail('That email already has an account');
-  return one(`INSERT INTO users (email, name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING ${PUBLIC_USER}`,
-    [email.trim(), (name || email).trim(), await hashPassword(password), role === 'admin' ? 'admin' : 'staff']);
+  return one(`INSERT INTO users (email, name, password_hash, role, recorder_id) VALUES ($1,$2,$3,$4,$5) RETURNING ${PUBLIC_USER}`,
+    [email.trim(), (name || email).trim(), await hashPassword(password), role, role === 'recorder' ? Number(recorder_id) : null]);
 }));
 app.put('/api/users/:id', requireAdmin, wrap(async (req) => {
   const id = Number(req.params.id);
-  if (id === req.user.id && (req.body.active === false || req.body.role === 'staff')) throw fail("You can't demote or disable yourself");
   const body = { ...req.body };
+  if (id === req.user.id && (body.active === false || (body.role && body.role !== 'admin'))) throw fail("You can't demote or disable yourself");
+  if (body.role !== undefined && !ROLES.includes(body.role)) throw fail('Unknown role');
+  if ('recorder_id' in body) body.recorder_id = body.recorder_id ? Number(body.recorder_id) : null;
+  if (body.role === 'recorder' && !body.recorder_id) throw fail('Pick which recorder this login belongs to');
+  if (body.role && body.role !== 'recorder') body.recorder_id = null;
   if (body.password) {
     if (String(body.password).length < 10) throw fail('Password must be at least 10 characters');
     body.password_hash = await hashPassword(body.password);
   }
-  await updateFields('users', id, body, ['name', 'email', 'role', 'active', 'approved', 'password_hash']);
+  await updateFields('users', id, body, ['name', 'email', 'role', 'active', 'approved', 'password_hash', 'recorder_id']);
   return one(`SELECT ${PUBLIC_USER} FROM users WHERE id = $1`, [id]);
 }));
 
+// ---------- My hours (recorder role) ----------
+app.get('/api/me/recorder', wrap(async (req) => {
+  const rid = req.user.recorder_id;
+  if (!rid) throw fail('Your login is not linked to a recorder yet. Ask an admin to link it.', 404);
+  const [profile, sessions, periods] = await Promise.all([
+    one(`SELECT id, name, email, contact, payment_method, payout_account_no, contract, contract_hard_copy FROM recorders WHERE id = $1`, [rid]),
+    q(`${SESSION_SELECT} WHERE s.recorder_id = $1 ORDER BY s.date DESC`, [rid]),
+    q(`SELECT p.id, p.name, p.start_date, p.end_date, p.status,
+              COALESCE(SUM(s.hours),0) AS hours, COALESCE(SUM(${PHP}),0) AS php,
+              x.status AS payment_status, x.amount_php AS paid_php, x.paid_at, x.reference
+       FROM periods p
+       JOIN sessions s ON s.recorder_id = $1 AND s.date BETWEEN p.start_date AND p.end_date
+       LEFT JOIN payments x ON x.period_id = p.id AND x.recorder_id = $1
+       GROUP BY p.id, x.id ORDER BY p.start_date DESC`, [rid]),
+  ]);
+  // Recorders only see their own sessions; drop internal fields.
+  for (const s of sessions) { delete s.created_by; delete s.source; delete s.recorder_id; }
+  return { profile, sessions, periods };
+}));
+
 // ---------- Settings ----------
-app.get('/api/settings', wrap(() => getSettings()));
+app.get('/api/settings', wrap(async (req) => {
+  const s = await getSettings();
+  if (req.user.role === 'admin') return s;
+  // Non-admins only get what their pages need; never rates for set directors.
+  return req.user.role === 'sdr' ? { business_rate_php: s.business_rate_php } : {};
+}));
 app.put('/api/settings', requireAdmin, wrap(async (req) => {
   for (const [k, v] of Object.entries(req.body)) {
     await q('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value', [k, String(v)]);
@@ -137,12 +199,16 @@ app.put('/api/settings', requireAdmin, wrap(async (req) => {
 }));
 
 // ---------- Recorders ----------
-app.get('/api/recorders', wrap(() => q(`
+app.get('/api/recorders', wrap((req) => {
+  // Set directors only need names for the log form — no contact, account or pay details.
+  if (hidesMoney(req)) return q('SELECT id, name, active FROM recorders ORDER BY name');
+  return q(`
   SELECT r.*, COUNT(s.id)::int AS sessions, COALESCE(SUM(s.hours),0) AS hours,
          COALESCE(SUM(${PHP}),0) AS php, MAX(s.date) AS last_date,
          (SELECT string_agg(alias, ' · ') FROM recorder_aliases a WHERE a.recorder_id = r.id) AS aliases
   FROM recorders r LEFT JOIN sessions s ON s.recorder_id = r.id
-  GROUP BY r.id ORDER BY r.name`)));
+  GROUP BY r.id ORDER BY r.name`);
+}));
 
 app.post('/api/recorders', wrap(async (req) => {
   if (!req.body.name?.trim()) throw fail('Name is required');
@@ -169,6 +235,7 @@ app.post('/api/recorders/:id/merge', wrap(async (req) => {
     await q('UPDATE payments SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q('UPDATE followups SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q('UPDATE recorder_aliases SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
+    await q('UPDATE users SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q(`UPDATE recorders SET app_account = COALESCE(app_account, $2), payout_account_no = COALESCE(payout_account_no, $3),
              payout_account_name = COALESCE(payout_account_name, $4), contact = COALESCE(contact, $5) WHERE id = $1`,
       [into, old.app_account, old.payout_account_no, old.payout_account_name, old.contact], c);
@@ -179,11 +246,14 @@ app.post('/api/recorders/:id/merge', wrap(async (req) => {
 }));
 
 // ---------- Locations ----------
-app.get('/api/locations', wrap(() => q(`
+app.get('/api/locations', wrap((req) => {
+  if (hidesMoney(req)) return q('SELECT id, name FROM locations ORDER BY name');
+  return q(`
   SELECT l.*, COUNT(s.id)::int AS sessions, COALESCE(SUM(s.hours),0) AS hours, COALESCE(SUM(${PHP}),0) AS php,
          MIN(s.date) AS first_date, MAX(s.date) AS last_date, COUNT(DISTINCT s.recorder_id)::int AS recorders
   FROM locations l LEFT JOIN sessions s ON s.location_id = l.id
-  GROUP BY l.id ORDER BY last_date DESC NULLS LAST`)));
+  GROUP BY l.id ORDER BY last_date DESC NULLS LAST`);
+}));
 app.post('/api/locations', wrap(async (req) => {
   if (!req.body.name?.trim()) throw fail('Name is required');
   return one('SELECT * FROM locations WHERE id = $1', [await resolveLocation(req.body.name)]);
@@ -207,11 +277,26 @@ const SESSION_SELECT = `
   SELECT s.*, r.name AS recorder, l.name AS location, ${USD} AS usd, ${PHP} AS php
   FROM sessions s JOIN recorders r ON r.id = s.recorder_id LEFT JOIN locations l ON l.id = s.location_id`;
 
-app.get('/api/sessions', wrap((req) => {
+/** Remove every money field from session rows (set directors). */
+function stripMoney(rows) {
+  for (const s of [].concat(rows)) { delete s.usd; delete s.php; delete s.rate_usd; delete s.fx_rate; }
+  return rows;
+}
+
+app.get('/api/sessions', wrap(async (req) => {
   const p = params();
   const where = sessionFilters(req.query, p);
-  return q(`${SESSION_SELECT} ${where} ORDER BY s.date DESC, l.name, r.name LIMIT 5000`, p.list);
+  const rows = await q(`${SESSION_SELECT} ${where} ORDER BY s.date DESC, l.name, r.name LIMIT 5000`, p.list);
+  return hidesMoney(req) ? stripMoney(rows) : rows;
 }));
+
+/** Set directors may only change sessions they logged themselves. */
+async function editableSession(req) {
+  const cur = await one('SELECT * FROM sessions WHERE id = $1', [Number(req.params.id)]);
+  if (!cur) throw fail('Session not found', 404);
+  if (req.user.role === 'set_director' && cur.created_by !== req.user.id) throw fail('You can only change sessions you logged', 403);
+  return cur;
+}
 
 async function sessionValues(b, defaults, db) {
   const hours = Number(b.hours);
@@ -249,15 +334,18 @@ app.post('/api/sessions/bulk', wrap(async (req) => {
 }));
 
 app.put('/api/sessions/:id', wrap(async (req) => {
-  const cur = await one('SELECT * FROM sessions WHERE id = $1', [Number(req.params.id)]);
-  if (!cur) throw fail('Session not found', 404);
-  const v = await sessionValues({ ...cur, ...req.body }, cur);
+  const cur = await editableSession(req);
+  const body = { ...req.body };
+  if (req.user.role !== 'admin') { delete body.rate_usd; delete body.fx_rate; } // only admins change pay rates
+  const v = await sessionValues({ ...cur, ...body }, cur);
   await q(`UPDATE sessions SET recorder_id=$1, location_id=$2, date=$3, hours=$4, category=$5, shift=$6, rate_usd=$7, fx_rate=$8, notes=$9 WHERE id=$10`,
     [...v, cur.id]);
-  return one(`${SESSION_SELECT} WHERE s.id = $1`, [cur.id]);
+  const row = await one(`${SESSION_SELECT} WHERE s.id = $1`, [cur.id]);
+  return hidesMoney(req) ? stripMoney(row) : row;
 }));
 
 app.delete('/api/sessions/:id', wrap(async (req) => {
+  await editableSession(req);
   await q('DELETE FROM sessions WHERE id = $1', [Number(req.params.id)]);
   return { ok: true };
 }));
