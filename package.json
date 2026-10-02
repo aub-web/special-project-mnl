@@ -1,19 +1,22 @@
 {
-  "name": "studio-payout",
+  "name": "studio-project-manila",
   "version": "0.1.0",
   "private": true,
-  "description": "Studio Payout tracker — recording sessions, pay periods and payouts",
+  "description": "Studio Project Manila — recording sessions, pay periods and payouts",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
-    "import": "node scripts/import-xlsx.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js",
+    "import": "node --env-file-if-exists=.env scripts/import-xlsx.js",
+    "add-user": "node --env-file-if-exists=.env scripts/add-user.js"
   },
   "engines": {
     "node": ">=22.13"
   },
   "dependencies": {
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "pg": "^8.23.1",
+    "serverless-http": "^4.0.0"
   },
   "devDependencies": {
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"

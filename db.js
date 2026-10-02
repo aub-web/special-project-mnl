@@ -1,65 +1,102 @@
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import pg from 'pg';
 
-const root = dirname(fileURLToPath(import.meta.url));
-export const DB_PATH = process.env.SPL_DB || join(root, 'data', 'spl.db');
+// Netlify DB sets NETLIFY_DATABASE_URL; DATABASE_URL works for any other Postgres.
+const connectionString = process.env.NETLIFY_DATABASE_URL || process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error('No database configured. Set NETLIFY_DATABASE_URL (or DATABASE_URL) — see README.');
+}
 
-mkdirSync(dirname(DB_PATH), { recursive: true });
-export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+// Serverless functions each hold their own pool, so keep it small.
+export const pool = new pg.Pool({ connectionString, max: process.env.NETLIFY ? 2 : 10 });
 
-db.exec(`
+/** Run a query on the pool (or a transaction client) and return the rows. */
+export async function q(text, params = [], db = pool) {
+  return (await db.query(text, params)).rows;
+}
+export async function one(text, params = [], db = pool) {
+  return (await db.query(text, params)).rows[0];
+}
+
+export async function tx(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await fn(client);
+    await client.query('COMMIT');
+    return r;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Dates are stored as 'YYYY-MM-DD' text so they reach the browser unchanged (no timezone shifts).
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id            SERIAL PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'staff',   -- admin | staff
+  active        BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS recorders (
-  id          INTEGER PRIMARY KEY,
-  name        TEXT NOT NULL UNIQUE,
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
   app_account TEXT,                -- "Recorder's Acct. No." from the HOME sheets (e.g. 005)
   payout_account_no   TEXT,        -- where money is sent (GoTyme / GCash / bank)
   payout_account_name TEXT,
   contact     TEXT,
-  active      INTEGER NOT NULL DEFAULT 1,
+  active      BOOLEAN NOT NULL DEFAULT TRUE,
   notes       TEXT,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS recorders_name_ci ON recorders (lower(name));
 
--- Alternate spellings seen in the spreadsheet / input, mapped to one recorder.
+-- Alternate spellings seen in the spreadsheet / input, mapped to one recorder. Stored lowercase.
 CREATE TABLE IF NOT EXISTS recorder_aliases (
-  alias       TEXT PRIMARY KEY COLLATE NOCASE,
+  alias       TEXT PRIMARY KEY,
   recorder_id INTEGER NOT NULL REFERENCES recorders(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS locations (
-  id     INTEGER PRIMARY KEY,
-  name   TEXT NOT NULL UNIQUE,
+  id     SERIAL PRIMARY KEY,
+  name   TEXT NOT NULL,
   notes  TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS locations_name_ci ON locations (lower(name));
 
 -- One row = one recorder's hours at one location on one day (or shift).
 CREATE TABLE IF NOT EXISTS sessions (
-  id          INTEGER PRIMARY KEY,
+  id          SERIAL PRIMARY KEY,
   recorder_id INTEGER NOT NULL REFERENCES recorders(id),
   location_id INTEGER REFERENCES locations(id),
-  date        TEXT NOT NULL,              -- YYYY-MM-DD
-  hours       REAL NOT NULL,
-  category    TEXT NOT NULL DEFAULT 'Studio',  -- Studio | Home Shift | OT
+  date        TEXT NOT NULL,                     -- YYYY-MM-DD
+  hours       DOUBLE PRECISION NOT NULL,
+  category    TEXT NOT NULL DEFAULT 'Studio',    -- Studio | Home Shift | OT
   shift       TEXT,
-  rate_usd    REAL NOT NULL,
-  fx_rate     REAL NOT NULL,              -- PHP per USD at time of entry
+  rate_usd    DOUBLE PRECISION NOT NULL,
+  fx_rate     DOUBLE PRECISION NOT NULL,         -- PHP per USD at time of entry
   notes       TEXT,
-  source      TEXT,                       -- e.g. sheet name it was imported from
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  source      TEXT,                              -- sheet it was imported from, or 'web'
+  created_by  INTEGER REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
 CREATE INDEX IF NOT EXISTS idx_sessions_recorder ON sessions(recorder_id);
 
 CREATE TABLE IF NOT EXISTS periods (
-  id         INTEGER PRIMARY KEY,
+  id         SERIAL PRIMARY KEY,
   name       TEXT NOT NULL,
   start_date TEXT NOT NULL,
   end_date   TEXT NOT NULL,
@@ -69,10 +106,10 @@ CREATE TABLE IF NOT EXISTS periods (
 
 -- What was actually sent to a recorder for a period.
 CREATE TABLE IF NOT EXISTS payments (
-  id          INTEGER PRIMARY KEY,
+  id          SERIAL PRIMARY KEY,
   period_id   INTEGER NOT NULL REFERENCES periods(id) ON DELETE CASCADE,
   recorder_id INTEGER NOT NULL REFERENCES recorders(id),
-  amount_php  REAL NOT NULL,
+  amount_php  DOUBLE PRECISION NOT NULL,
   status      TEXT NOT NULL DEFAULT 'Paid',  -- Paid | Pending | Issue
   account_no  TEXT,
   reference   TEXT,
@@ -83,43 +120,36 @@ CREATE TABLE IF NOT EXISTS payments (
 
 -- Payment problems to chase (wrong account, short payment, etc.)
 CREATE TABLE IF NOT EXISTS followups (
-  id               INTEGER PRIMARY KEY,
+  id               SERIAL PRIMARY KEY,
   recorder_id      INTEGER REFERENCES recorders(id),
   description      TEXT,
-  expected_php     REAL,
-  received_php     REAL,
+  expected_php     DOUBLE PRECISION,
+  received_php     DOUBLE PRECISION,
   old_account_no   TEXT,
   old_account_name TEXT,
   new_account_no   TEXT,
   new_account_name TEXT,
   status           TEXT NOT NULL DEFAULT 'Open',  -- Open | Resolved
   notes            TEXT,
-  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-`);
 
-const DEFAULT_SETTINGS = { rate_usd: '2.5', fx_rate: '60', ot_rate_php: '150' };
-const insSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
-for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insSetting.run(k, v);
+INSERT INTO settings (key, value) VALUES ('rate_usd', '2.5'), ('fx_rate', '60'), ('ot_rate_php', '150')
+ON CONFLICT (key) DO NOTHING;
+`;
 
-export function getSettings() {
+let migrated;
+/** Create tables if missing. Cached so each cold start runs it once. */
+export function migrate() {
+  return (migrated ??= pool.query(SCHEMA).catch((e) => { migrated = null; throw e; }));
+}
+
+export async function getSettings(db = pool) {
   const out = {};
-  for (const { key, value } of db.prepare('SELECT key, value FROM settings').all()) {
+  for (const { key, value } of await q('SELECT key, value FROM settings', [], db)) {
     out[key] = isNaN(Number(value)) ? value : Number(value);
   }
   return out;
-}
-
-export function tx(fn) {
-  db.exec('BEGIN');
-  try {
-    const r = fn();
-    db.exec('COMMIT');
-    return r;
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
-  }
 }
 
 /** Collapse a name to a comparison key: lowercase, no accents/punctuation/middle initials. */
@@ -134,35 +164,36 @@ export function nameKey(name) {
     .join(' ');
 }
 
-/** Find a recorder by exact name, alias, or normalized key; create if none. */
-export function resolveRecorder(rawName, { create = true } = {}) {
-  const name = String(rawName).replace(/\s+/g, ' ').trim();
+/**
+ * Find a recorder by exact name or alias; create if none.
+ * fuzzy: also match ignoring middle initials/punctuation. Only the spreadsheet importer uses it —
+ * in day-to-day entry it would silently merge people whose names differ only by an initial.
+ */
+export async function resolveRecorder(rawName, { create = true, fuzzy = false, db = pool } = {}) {
+  const name = String(rawName ?? '').replace(/\s+/g, ' ').trim();
   if (!name) return null;
+  const key = nameKey(name);
   let row =
-    db.prepare('SELECT id FROM recorders WHERE name = ? COLLATE NOCASE').get(name) ||
-    db.prepare('SELECT recorder_id AS id FROM recorder_aliases WHERE alias = ?').get(name);
-  if (!row) {
-    const key = nameKey(name);
-    row = db.prepare('SELECT recorder_id AS id FROM recorder_aliases WHERE alias = ?').get(key);
-    if (!row) {
-      for (const r of db.prepare('SELECT id, name FROM recorders').all()) {
-        if (nameKey(r.name) === key) { row = r; break; }
-      }
-    }
+    (await one('SELECT id FROM recorders WHERE lower(name) = lower($1)', [name], db)) ||
+    (await one('SELECT recorder_id AS id FROM recorder_aliases WHERE alias = $1', [name.toLowerCase()], db));
+  if (!row && fuzzy) {
+    row = (await one('SELECT recorder_id AS id FROM recorder_aliases WHERE alias = $1', [key], db)) ||
+      (await q('SELECT id, name FROM recorders', [], db)).find((r) => nameKey(r.name) === key);
   }
   if (row) return row.id;
   if (!create) return null;
-  return Number(db.prepare('INSERT INTO recorders (name) VALUES (?)').run(name).lastInsertRowid);
+  return (await one('INSERT INTO recorders (name) VALUES ($1) RETURNING id', [name], db)).id;
 }
 
-export function addAlias(alias, recorderId) {
-  db.prepare('INSERT OR REPLACE INTO recorder_aliases (alias, recorder_id) VALUES (?, ?)').run(alias.trim(), recorderId);
+export async function addAlias(alias, recorderId, db = pool) {
+  await q(`INSERT INTO recorder_aliases (alias, recorder_id) VALUES ($1, $2)
+           ON CONFLICT (alias) DO UPDATE SET recorder_id = excluded.recorder_id`, [alias.trim().toLowerCase(), recorderId], db);
 }
 
-export function resolveLocation(name) {
+export async function resolveLocation(name, db = pool) {
   const n = String(name || '').replace(/\s+/g, ' ').trim();
   if (!n) return null;
-  const row = db.prepare('SELECT id FROM locations WHERE name = ? COLLATE NOCASE').get(n);
+  const row = await one('SELECT id FROM locations WHERE lower(name) = lower($1)', [n], db);
   if (row) return row.id;
-  return Number(db.prepare('INSERT INTO locations (name) VALUES (?)').run(n).lastInsertRowid);
+  return (await one('INSERT INTO locations (name) VALUES ($1) RETURNING id', [n], db)).id;
 }

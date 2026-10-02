@@ -40,6 +40,14 @@ h2 { font-size: 15px; margin: 0 0 12px; }
 nav a { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 8px; color: var(--ink); text-decoration: none; margin-bottom: 2px; }
 nav a:hover { background: var(--bg); }
 nav a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.sidebar { display: flex; flex-direction: column; }
+.me { margin-top: auto; padding: 12px 10px 0; border-top: 1px solid var(--line); font-size: 13px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.me > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.logged-out { display: grid; grid-template-columns: 1fr; place-items: center; }
+body.logged-out .sidebar { display: none; }
+.login { width: min(360px, 92vw); display: grid; gap: 14px; padding: 28px; }
+.login .brand { padding: 0 0 6px; }
+.login-err { color: var(--danger); margin: 0; font-size: 13px; }
 .badge { background: var(--warn); color: #fff; border-radius: 999px; font-size: 11px; padding: 1px 7px; font-weight: 600; }
 
 main { padding: 24px 28px 60px; min-width: 0; }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Studio Payout</title>
+  <title>Studio Project Manila</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%232f6f5e'/><circle cx='16' cy='16' r='5' fill='white'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -11,7 +11,7 @@
 </head>
 <body>
   <aside class="sidebar">
-    <div class="brand"><span class="dot"></span>Studio Payout</div>
+    <div class="brand"><span class="dot"></span>Studio Project Manila</div>
     <nav id="nav">
       <a href="#/" data-route="">Dashboard</a>
       <a href="#/log" data-route="log">Log hours</a>
@@ -21,7 +21,12 @@
       <a href="#/locations" data-route="locations">Locations</a>
       <a href="#/followups" data-route="followups">Follow-ups <span id="fu-badge" class="badge" hidden></span></a>
       <a href="#/settings" data-route="settings">Settings</a>
+      <a href="#/users" data-route="users" id="nav-users" hidden>Users</a>
     </nav>
+    <div class="me">
+      <div><b id="me-name"></b> <span class="muted" id="me-role"></span></div>
+      <button class="ghost" id="logout">Sign out</button>
+    </div>
   </aside>
   <main id="view"></main>
   <dialog id="modal"><form method="dialog" id="modal-form"></form></dialog>

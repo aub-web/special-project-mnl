@@ -1,4 +1,4 @@
-// Studio Payout — single-page frontend. Each route is a function that renders into #view.
+// Studio Project Manila — single-page frontend. Each route is a function that renders into #view.
 
 // ---------- helpers ----------
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -19,8 +19,48 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && path !== '/auth/login') {
+    showLogin();
+    throw new Error('Please sign in');
+  }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
+}
+
+// ---------- auth ----------
+let me = null;
+function showLogin() {
+  me = null;
+  document.body.classList.add('logged-out');
+  const fresh = view.cloneNode(false);
+  view.replaceWith(fresh);
+  view = fresh;
+  view.innerHTML = `
+    <form class="card login" id="login-form">
+      <div class="brand"><span class="dot"></span>Studio Project Manila</div>
+      <label class="f">Email<input name="email" type="email" autocomplete="username" required autofocus></label>
+      <label class="f">Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <p class="login-err" id="login-err" hidden></p>
+      <button class="primary">Sign in</button>
+    </form>`;
+  $('#login-form').onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api('/auth/login', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      await boot();
+    } catch (err) {
+      const el = $('#login-err');
+      el.textContent = err.message; el.hidden = false;
+    }
+  };
+}
+async function boot() {
+  try { me = await api('/auth/me'); } catch { return; }
+  document.body.classList.remove('logged-out');
+  $('#nav-users').hidden = me.role !== 'admin';
+  $('#me-name').textContent = me.name;
+  $('#me-role').textContent = me.role;
+  render();
 }
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
 
@@ -79,9 +119,10 @@ async function lookups(force = false) {
 const CATEGORIES = ['Studio', 'Home Shift', 'OT'];
 
 // ---------- routes ----------
-const routes = { '': dashboard, log, sessions, periods, period, recorders, locations, followups, settings };
+const routes = { '': dashboard, log, sessions, periods, period, recorders, locations, followups, settings, users };
 
 async function render() {
+  if (!me) return;
   const [route, ...args] = location.hash.replace(/^#\/?/, '').split('?')[0].split('/');
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (route === 'period' ? 'periods' : route)));
   // Fresh element per page so event listeners from the previous page don't pile up.
@@ -419,11 +460,11 @@ async function recorders() {
       { name: 'contact', label: 'Contact (phone / email)', value: r.contact || '' },
       { name: 'payout_account_no', label: 'Payout account no. (GoTyme/GCash/bank)', value: r.payout_account_no || '' },
       { name: 'payout_account_name', label: 'Payout account name', value: r.payout_account_name || '' },
-      { name: 'active', label: 'Status', type: 'select', options: [['1', 'Active'], ['0', 'Inactive']], value: String(r.active) },
+      { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Inactive']], value: String(r.active) },
       { name: 'notes', label: 'Notes', type: 'textarea', value: r.notes || '', full: true },
     ] });
     if (!v) return;
-    try { await api('/recorders/' + id, { method: 'PUT', body: { ...v, active: Number(v.active) } }); toast('Saved'); render(); }
+    try { await api('/recorders/' + id, { method: 'PUT', body: { ...v, active: v.active === 'true' } }); toast('Saved'); render(); }
     catch (err) { toast(err.message, true); }
   });
   draw();
@@ -510,23 +551,84 @@ async function followups() {
 // ---------- Settings ----------
 async function settings() {
   const s = await api('/settings');
+  const admin = me.role === 'admin';
   view.innerHTML = `
     <div class="head"><div><h1>Settings</h1><p>Defaults for new sessions. Existing sessions keep the rate they were logged with.</p></div></div>
-    <div class="card" style="max-width:520px">
-      <form id="st-form" class="grid">
-        <label class="f">Recording rate (USD per hour)<input name="rate_usd" type="number" step="0.01" value="${s.rate_usd}"></label>
-        <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}"></label>
+    <div class="grid" style="max-width:520px">
+      <form id="st-form" class="card grid">
+        <h2>Rates${admin ? '' : ' <span class="muted" style="font-weight:400">(admins can change)</span>'}</h2>
+        <label class="f">Recording rate (USD per hour)<input name="rate_usd" type="number" step="0.01" value="${s.rate_usd}" ${admin ? '' : 'disabled'}></label>
+        <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}" ${admin ? '' : 'disabled'}></label>
         <p class="muted" style="margin:0">= <b id="st-php">${php(s.rate_usd * s.fx_rate)}</b> per hour</p>
-        <div><button class="primary">Save settings</button></div>
+        ${admin ? '<div><button class="primary">Save rates</button></div>' : ''}
+      </form>
+      <form id="pw-form" class="card grid">
+        <h2>Change my password</h2>
+        <label class="f">Current password<input name="current" type="password" autocomplete="current-password" required></label>
+        <label class="f">New password (10+ characters)<input name="password" type="password" autocomplete="new-password" minlength="10" required></label>
+        <div><button>Update password</button></div>
       </form>
     </div>`;
   const f = $('#st-form');
   f.oninput = () => ($('#st-php').textContent = php(f.rate_usd.value * f.fx_rate.value));
   f.onsubmit = async (e) => {
     e.preventDefault();
-    await api('/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) });
-    cache.recorders = null; toast('Settings saved');
+    try {
+      await api('/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) });
+      cache.recorders = null; toast('Settings saved');
+    } catch (err) { toast(err.message, true); }
+  };
+  $('#pw-form').onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api('/auth/password', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      e.target.reset(); toast('Password updated');
+    } catch (err) { toast(err.message, true); }
   };
 }
 
-render();
+// ---------- Users (admin) ----------
+async function users() {
+  if (me.role !== 'admin') { view.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
+  const list = await api('/users');
+  view.innerHTML = `
+    <div class="head"><div><h1>Users</h1><p>Who can sign in. Admins can also manage users and rates.</p></div>
+      <button class="primary" id="us-new">+ Add user</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>
+    ${list.map((u) => `<tr><td><b>${esc(u.name)}</b>${u.id === me.id ? ' <span class="pill accent">you</span>' : ''}</td><td>${esc(u.email)}</td>
+      <td><span class="pill ${u.role === 'admin' ? 'accent' : ''}">${esc(u.role)}</span></td>
+      <td><span class="pill ${u.active ? 'ok' : ''}">${u.active ? 'Active' : 'Disabled'}</span></td>
+      <td>${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—'}</td>
+      <td class="num"><button class="ghost" data-edit="${u.id}">Edit</button></td></tr>`).join('')}
+    </tbody></table></div>`;
+  const pwHint = '<p class="muted" style="margin:0">Share the password with them privately; they can change it in Settings.</p>';
+  $('#us-new').onclick = async () => {
+    const v = await modal({ title: 'Add user', submit: 'Create', extra: pwHint, fields: [
+      { name: 'name', label: 'Name', required: true }, { name: 'email', label: 'Email', type: 'email', required: true },
+      { name: 'password', label: 'Temporary password (10+ chars)', type: 'password', required: true },
+      { name: 'role', label: 'Role', type: 'select', options: [['staff', 'Staff'], ['admin', 'Admin']] },
+    ] });
+    if (!v) return;
+    try { await api('/users', { method: 'POST', body: v }); toast('User added'); render(); } catch (e) { toast(e.message, true); }
+  };
+  view.addEventListener('click', async (e) => {
+    const id = e.target.dataset.edit; if (!id) return;
+    const u = list.find((x) => String(x.id) === id);
+    const v = await modal({ title: 'Edit user', fields: [
+      { name: 'name', label: 'Name', value: u.name, required: true }, { name: 'email', label: 'Email', type: 'email', value: u.email, required: true },
+      { name: 'role', label: 'Role', type: 'select', options: [['staff', 'Staff'], ['admin', 'Admin']], value: u.role },
+      { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Disabled']], value: String(u.active) },
+      { name: 'password', label: 'Reset password (leave blank to keep)', type: 'password', full: true },
+    ] });
+    if (!v) return;
+    const body = { ...v, active: v.active === 'true' };
+    if (!body.password) delete body.password;
+    try { await api('/users/' + id, { method: 'PUT', body }); toast('Saved'); render(); } catch (err) { toast(err.message, true); }
+  });
+}
+
+$('#logout').onclick = async () => {
+  await api('/auth/logout', { method: 'POST' }).catch(() => {});
+  showLogin();
+};
+boot();
