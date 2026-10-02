@@ -211,14 +211,26 @@ INSERT INTO settings (key, value) VALUES ('ot_rate_php', '150'),
   ('admin_emails', 'aubrey@atlascapture.io'),   -- these emails become admins (pre-approved) when they sign up
   ('business_rate_php', '850'),
   ('business_sheet_id', '1904ps8_vBAG2Nezf7O9gnJveCRNRt38OoC35Ra2W2a8'),
-  ('recorder_sheet_id', '1oTfvacoQFUpDsxxZ4s_xYMNqqYVJ5IWkAIpShnH0Jq8')
+  ('recorder_sheet_id', '1oTfvacoQFUpDsxxZ4s_xYMNqqYVJ5IWkAIpShnH0Jq8'),
+  ('payout_sheet_id', '1PxfBOfKmuHfG3Y_7GCrwXueg8pIm1mIL9aaxOANpxwE')
 ON CONFLICT (key) DO NOTHING;
 `;
 
+// Bump when SCHEMA changes. The schema (with its ALTER TABLEs, which lock tables) only runs when the
+// stored version differs, so serverless cold starts don't block a running sync.
+const SCHEMA_VERSION = '2026-10-02.pesos';
+
 let migrated;
-/** Create tables if missing. Cached so each cold start runs it once. */
+/** Create/upgrade tables if needed. Cached so each cold start checks once. */
 export function migrate() {
-  return (migrated ??= pool.query(SCHEMA).catch((e) => { migrated = null; throw e; }));
+  return (migrated ??= (async () => {
+    const current = await pool.query(`SELECT value FROM settings WHERE key = 'schema_version'`)
+      .then((r) => r.rows[0]?.value, () => null); // settings table may not exist yet
+    if (current === SCHEMA_VERSION) return;
+    await pool.query(SCHEMA);
+    await pool.query(`INSERT INTO settings (key, value) VALUES ('schema_version', $1)
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value`, [SCHEMA_VERSION]);
+  })().catch((e) => { migrated = null; throw e; }));
 }
 
 export async function getSettings(db = pool) {

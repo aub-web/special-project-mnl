@@ -353,6 +353,48 @@ async function log() {
   draw();
 }
 
+// ---------- Hours sheet sync (admins) ----------
+// The team still edits hours in the "Studio Payout Summary" sheet; this pulls those edits in.
+// Sessions logged in the app are never touched by a sync.
+async function hoursSyncBar() {
+  if (!isAdmin()) return '';
+  const s = cache.settings || (await api('/settings'));
+  return `<div class="card sync-bar">
+    <div><b>Hours sheet</b> <span class="muted">· Studio Payout Summary · ${s.payout_synced_at ? `last synced ${new Date(s.payout_synced_at).toLocaleString()}` : 'not synced from the app yet'}</span></div>
+    <div class="head-actions">
+      <button id="hs-sync">⟳ Sync from Google Sheet</button>
+      <label class="btn" for="hs-file">⬆ Upload .xlsx</label><input type="file" id="hs-file" accept=".xlsx" hidden>
+    </div></div>`;
+}
+function bindHoursSync() {
+  const btn = $('#hs-sync'), file = $('#hs-file');
+  if (!btn) return;
+  const done = async (r) => {
+    cache.settings = null;
+    const list = (items, cls) => items.length
+      ? `<ul class="change-list ${cls}">${items.slice(0, 40).map((x) => `<li>${esc(x)}</li>`).join('')}${items.length > 40 ? `<li class="muted">…and ${items.length - 40} more</li>` : ''}</ul>` : '';
+    await modal({ title: 'Hours synced', submit: 'Done', fields: [],
+      extra: `<p style="margin:0">${r.sessions} sessions · ${hrs(r.hours)} h from the sheet.</p>
+        ${!r.added.length && !r.removed.length ? '<p class="muted" style="margin:0">No changes — the app already matched the sheet.</p>' : ''}
+        ${r.added.length ? `<h2 style="margin:6px 0 0">Added or changed (${r.added.length})</h2>${list(r.added, 'add')}` : ''}
+        ${r.removed.length ? `<h2 style="margin:6px 0 0">Removed or replaced (${r.removed.length})</h2>${list(r.removed, 'del')}` : ''}` });
+    render();
+  };
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = 'Syncing…';
+    try { await done(await api('/payout/sync', { method: 'POST' })); }
+    catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = '⟳ Sync from Google Sheet'; }
+  };
+  file.onchange = async () => {
+    const f = file.files[0]; if (!f) return;
+    const b64 = await new Promise((ok, bad) => { const rd = new FileReader(); rd.onload = () => ok(rd.result); rd.onerror = bad; rd.readAsDataURL(f); });
+    toast('Uploading…');
+    try { await done(await api('/payout/upload', { method: 'POST', body: { file: b64 } })); }
+    catch (e) { toast(e.message, true); }
+    file.value = '';
+  };
+}
+
 // ---------- Sessions ----------
 async function sessions(recorderId = '') {
   const { recorders: recs, locations: locs } = await lookups();
@@ -360,7 +402,7 @@ async function sessions(recorderId = '') {
   const f = { from: params.get('from') || '', to: params.get('to') || '', recorder_id: recorderId, location_id: '', category: '', q: '' };
   view.innerHTML = `
     <div class="head"><div><h1>Sessions</h1><p id="ss-sum" class="muted"></p></div><a class="btn primary" href="#/log">+ Log hours</a></div>
-    ${isAdmin() ? '' : '<p class="muted" style="margin:-8px 0 12px;font-size:13px">You can edit or delete the sessions you logged.</p>'}
+    ${isAdmin() ? await hoursSyncBar() : '<p class="muted" style="margin:-8px 0 12px;font-size:13px">You can edit or delete the sessions you logged.</p>'}
     <div class="toolbar">
       <label class="f">From<input type="date" data-f="from" value="${f.from}"></label>
       <label class="f">To<input type="date" data-f="to" value="${f.to}"></label>
@@ -388,6 +430,7 @@ async function sessions(recorderId = '') {
         <td class="num">${hrs(H)} h</td>${money ? `<td></td><td class="num">${php(P)}</td>` : ''}<td></td><td></td></tr></tfoot></table>`
       : '<div class="empty">No sessions match these filters.</div>';
   };
+  bindHoursSync();
   view.querySelector('.toolbar').addEventListener('input', (e) => {
     const k = e.target.dataset.f; if (!k) return;
     f[k] = e.target.value;
@@ -425,16 +468,18 @@ async function sessions(recorderId = '') {
 
 // ---------- Pay periods ----------
 async function periods() {
-  const list = await api('/periods');
+  const [list, syncBar] = await Promise.all([api('/periods'), hoursSyncBar()]);
   view.innerHTML = `
     <div class="head"><div><h1>Pay periods</h1><p>Each period generates the summary sheet automatically from logged sessions.</p></div>
       <div style="display:flex;gap:8px"><button id="pp-custom">Custom range</button><button class="primary" id="pp-new">+ New period</button></div></div>
+    ${syncBar}
     <div class="table-wrap"><table><thead><tr><th>Period</th><th>Dates</th><th>Status</th><th class="num">Recorders</th><th class="num">Hours</th><th class="num">Payout</th><th class="num">Marked paid</th><th>Notes</th></tr></thead><tbody>
     ${list.map((p) => `<tr><td><a href="#/period/${p.id}"><b>${esc(p.name)}</b></a></td><td>${fmtDate(p.start_date)} – ${fmtDate(p.end_date)}</td>
       <td><span class="pill ${p.status === 'Open' ? 'warn' : 'ok'}">${esc(p.status)}</span></td>
       <td class="num">${p.recorders}</td><td class="num">${hrs(p.hours)}</td><td class="num">${php(p.php)}</td>
       <td class="num">${p.paid_php ? php(p.paid_php) : '<span class="muted">—</span>'}</td><td class="muted">${esc(p.notes || '')}</td></tr>`).join('')}
     </tbody></table></div>`;
+  bindHoursSync();
   $('#pp-new').onclick = async () => {
     const v = await modal({ title: 'New pay period', fields: [
       { name: 'start_date', label: 'Start', type: 'date', required: true },

@@ -4,9 +4,10 @@ import { pool, q, one, tx, migrate, getSettings, resolveRecorder, resolveLocatio
 import { requireUser, requireAdmin, login, signup, setSessionCookie, clearSessionCookie, hashPassword, PUBLIC_USER } from './auth.js';
 import { router as businessRoutes } from './businesses.js';
 import { router as recorderSyncRoutes, driveUrl } from './recorders-sync.js';
+import { router as payoutSyncRoutes } from './payout-sync.js';
 
 export const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '8mb' })); // room for an uploaded .xlsx (base64)
 
 // Netlify forwards /api/* to /.netlify/functions/api/* — map it back so routes match either way.
 app.use((req, res, next) => {
@@ -106,6 +107,7 @@ app.use('/api', (req, res, next) => {
 
 app.use('/api', businessRoutes);
 app.use('/api', recorderSyncRoutes);
+app.use('/api', payoutSyncRoutes);
 app.get('/api/auth/me', wrap((req) => req.user));
 
 app.post('/api/auth/password', wrap(async (req) => {
