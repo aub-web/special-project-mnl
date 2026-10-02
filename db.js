@@ -2,7 +2,8 @@ import pg from 'pg';
 
 // DATABASE_URL is ours; NETLIFY_DATABASE_URL is what Netlify DB sets automatically. Ours wins.
 const envName = process.env.DATABASE_URL ? 'DATABASE_URL' : 'NETLIFY_DATABASE_URL';
-const connectionString = (process.env[envName] || '').trim().replace(/^["']|["']$/g, '');
+// Tolerate a whole .env line pasted as the value ("DATABASE_URL=postgresql://…") and surrounding quotes.
+const connectionString = (process.env[envName] || '').trim().replace(/^[A-Z_]+=/, '').replace(/^["']|["']$/g, '');
 if (!connectionString) {
   throw new Error('No database configured. Set DATABASE_URL (or NETLIFY_DATABASE_URL) — see README.');
 }
