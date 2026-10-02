@@ -868,23 +868,45 @@ async function myHours() {
   let d;
   try { d = await api('/me/recorder'); }
   catch (e) { view.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
-  const { profile: p, sessions: list, periods } = d;
-  const H = list.reduce((a, s) => a + s.hours, 0), P = list.reduce((a, s) => a + s.php, 0);
-  const paid = periods.reduce((a, x) => a + (x.payment_status === 'Paid' ? x.paid_php : 0), 0);
+  const { profile: p, sessions: all, periods } = d;
   const payPill = (x) => !x.payment_status ? '<span class="pill">Not paid yet</span>'
     : `<span class="pill ${x.payment_status === 'Paid' ? 'ok' : 'warn'}">${esc(x.payment_status)}</span>${x.paid_at ? ` <span class="muted" style="font-size:12px">${fmtDate(x.paid_at)}</span>` : ''}`;
+
+  // Date range: kept in the URL (#/me?from=…&to=…) so a refresh or bookmark keeps it.
+  const iso = (dt) => dt.toLocaleDateString('en-CA');
+  const now = new Date();
+  const monday = new Date(now); monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  const presets = {
+    week: [iso(monday), iso(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6))],
+    month: [iso(new Date(now.getFullYear(), now.getMonth(), 1)), iso(new Date(now.getFullYear(), now.getMonth() + 1, 0))],
+    lastmonth: [iso(new Date(now.getFullYear(), now.getMonth() - 1, 1)), iso(new Date(now.getFullYear(), now.getMonth(), 0))],
+    all: ['', ''],
+  };
+  const qp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const range = { from: qp.get('from') || '', to: qp.get('to') || '' };
+
   view.innerHTML = `
     <div class="head"><div><h1>Hi, ${esc(p.name.split(' ')[0])}</h1><p>Your recording hours and pay</p></div></div>
-    <div class="grid kpis">
-      <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(H)}</div><div class="sub">${list.length} sessions</div></div>
-      <div class="card kpi"><div class="label">Total earned</div><div class="value">${php(P)}</div></div>
-      <div class="card kpi"><div class="label">Marked paid</div><div class="value">${php(paid)}</div></div>
-      <div class="card kpi"><div class="label">Last session</div><div class="value" style="font-size:18px">${fmtDate(list[0]?.date, { month: 'short', day: 'numeric', year: 'numeric' })}</div></div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="toolbar" style="margin:0">
+        <label class="f">From<input type="date" id="me-from"></label>
+        <label class="f">To<input type="date" id="me-to"></label>
+        <label class="f" style="flex:1;min-width:180px">Pay period<select id="me-period"><option value="">—</option>
+          ${periods.map((x) => `<option value="${x.start_date}|${x.end_date}">${esc(x.name)}</option>`).join('')}</select></label>
+        <div class="range-btns">
+          <button type="button" class="ghost" data-preset="week">This week</button>
+          <button type="button" class="ghost" data-preset="month">This month</button>
+          <button type="button" class="ghost" data-preset="lastmonth">Last month</button>
+          <button type="button" class="ghost" data-preset="all">All time</button>
+        </div>
+      </div>
     </div>
+    <div class="grid kpis" id="me-kpis"></div>
     <div class="grid two">
       <div class="card"><h2>Pay periods</h2>
         ${periods.length ? `<div style="overflow:auto"><table><thead><tr><th>Period</th><th class="num">Hours</th><th class="num">Earned</th><th>Payment</th></tr></thead><tbody>
-        ${periods.map((x) => `<tr><td><b>${esc(x.name)}</b><div class="muted" style="font-size:12px">${fmtDate(x.start_date)} – ${fmtDate(x.end_date)}</div></td>
+        ${periods.map((x) => `<tr class="clickable" data-range="${x.start_date}|${x.end_date}" title="Show this period's sessions">
+          <td><b>${esc(x.name)}</b><div class="muted" style="font-size:12px">${fmtDate(x.start_date)} – ${fmtDate(x.end_date)}</div></td>
           <td class="num">${hrs(x.hours)}</td><td class="num">${php(x.php)}</td><td>${payPill(x)}</td></tr>`).join('')}
         </tbody></table></div>` : '<p class="muted">No pay periods yet.</p>'}</div>
       <div class="card"><h2>My details</h2><dl class="profile">
@@ -894,12 +916,46 @@ async function myHours() {
         <dt>Contract</dt><dd>${contractPill(p)}</dd>
       </dl><p class="muted" style="font-size:12px;margin:12px 0 0">Something wrong? Tell the studio admin so they can update it.</p></div>
     </div>
-    <div class="section-head" style="margin-top:14px"><h2>My sessions</h2></div>
-    <div class="table-wrap">${list.length ? `<table><thead><tr><th>Date</th><th>Location</th><th>Category</th><th class="num">Hours</th><th class="num">Earned</th></tr></thead><tbody>
-      ${list.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td>${esc(s.location || '—')}</td>
-        <td><span class="pill">${esc(s.category)}</span></td><td class="num">${hrs(s.hours)}</td><td class="num">${php(s.php)}</td></tr>`).join('')}
-      </tbody><tfoot><tr><td>Total</td><td></td><td></td><td class="num">${hrs(H)} h</td><td class="num">${php(P)}</td></tr></tfoot></table>`
-      : '<div class="empty">No sessions yet.</div>'}</div>`;
+    <div class="section-head" style="margin-top:14px"><h2>My sessions</h2><span class="muted" id="me-range-label"></span></div>
+    <div class="table-wrap" id="me-sessions"></div>`;
+
+  const long = { month: 'short', day: 'numeric', year: 'numeric' };
+  const draw = () => {
+    const list = all.filter((s) => (!range.from || s.date >= range.from) && (!range.to || s.date <= range.to));
+    const H = list.reduce((a, s) => a + s.hours, 0), P = list.reduce((a, s) => a + s.php, 0);
+    // "Marked paid" counts periods that overlap the chosen range.
+    const inRange = periods.filter((x) => (!range.to || x.start_date <= range.to) && (!range.from || x.end_date >= range.from));
+    const paid = inRange.reduce((a, x) => a + (x.payment_status === 'Paid' ? x.paid_php : 0), 0);
+    $('#me-from').value = range.from; $('#me-to').value = range.to;
+    $('#me-period').value = periods.some((x) => `${x.start_date}|${x.end_date}` === `${range.from}|${range.to}`) ? `${range.from}|${range.to}` : '';
+    view.querySelectorAll('[data-preset]').forEach((b) => b.classList.toggle('on', presets[b.dataset.preset].join('|') === `${range.from}|${range.to}`));
+    view.querySelectorAll('tr[data-range]').forEach((tr) => tr.classList.toggle('selected', tr.dataset.range === `${range.from}|${range.to}`));
+    $('#me-range-label').textContent = !range.from && !range.to ? 'All time'
+      : `${range.from ? fmtDate(range.from, long) : 'Start'} – ${range.to ? fmtDate(range.to, long) : 'today'}`;
+    $('#me-kpis').innerHTML = `
+      <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(H)}</div><div class="sub">${list.length} session${list.length === 1 ? '' : 's'}</div></div>
+      <div class="card kpi"><div class="label">Earned</div><div class="value">${php(P)}</div></div>
+      <div class="card kpi"><div class="label">Marked paid</div><div class="value">${php(paid)}</div></div>
+      <div class="card kpi"><div class="label">Last session</div><div class="value" style="font-size:18px">${fmtDate(list[0]?.date, long)}</div></div>`;
+    $('#me-sessions').innerHTML = list.length
+      ? `<table><thead><tr><th>Date</th><th>Location</th><th>Category</th><th class="num">Hours</th><th class="num">Earned</th></tr></thead><tbody>
+        ${list.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td>${esc(s.location || '—')}</td>
+          <td><span class="pill">${esc(s.category)}</span></td><td class="num">${hrs(s.hours)}</td><td class="num">${php(s.php)}</td></tr>`).join('')}
+        </tbody><tfoot><tr><td>Total · ${list.length} session${list.length === 1 ? '' : 's'}</td><td></td><td></td><td class="num">${hrs(H)} h</td><td class="num">${php(P)}</td></tr></tfoot></table>`
+      : `<div class="empty">${all.length ? 'No sessions in this date range.' : 'No sessions yet.'}</div>`;
+    history.replaceState(null, '', '#/me' + (range.from || range.to ? '?' + qs(range) : ''));
+  };
+  const set = (from, to) => { range.from = from; range.to = to; draw(); };
+  $('#me-from').onchange = (e) => set(e.target.value, range.to);
+  $('#me-to').onchange = (e) => set(range.from, e.target.value);
+  $('#me-period').onchange = (e) => (e.target.value ? set(...e.target.value.split('|')) : set('', ''));
+  view.addEventListener('click', (e) => {
+    const preset = e.target.closest('[data-preset]')?.dataset.preset;
+    if (preset) return set(...presets[preset]);
+    const row = e.target.closest('tr[data-range]');
+    if (row) { set(...row.dataset.range.split('|')); $('#me-sessions').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  });
+  draw();
 }
 
 // ---------- Users (admin) ----------

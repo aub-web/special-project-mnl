@@ -170,6 +170,10 @@ dl.profile { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16p
 dl.profile dt { color: var(--muted); }
 dl.profile dd { margin: 0; overflow-wrap: anywhere; }
 
+.range-btns { display: flex; gap: 4px; flex-wrap: wrap; align-self: end; }
+.range-btns button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+tr.clickable { cursor: pointer; }
+tr.selected td { background: var(--accent-soft); }
 .log-rows { display: grid; gap: 6px; }
 .log-row { display: grid; grid-template-columns: 2fr 90px 2fr 36px; gap: 6px; }
 .log-row.head-row { font-size: 12px; color: var(--muted); }
