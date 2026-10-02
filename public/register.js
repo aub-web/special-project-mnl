@@ -4,7 +4,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const root = $('#reg');
 const key = new URLSearchParams(location.search).get('k') || '';
 
-const MIN = { id: 2, esign: 2 }, MAX_PER_KIND = 6;
+const MIN = { id: 1, esign: 1 }, MAX_PER_KIND = 2;
 const files = { id: [], esign: [] };   // { name, type, size, data (dataURL), preview }
 
 // Theme toggle (same as the app)
@@ -48,8 +48,10 @@ function drawFiles(kind) {
       <span class="reg-file-name">${esc(f.name)}<small>${kb(f.size)}</small></span>
       <button type="button" class="ghost" data-remove="${kind}:${i}" aria-label="Remove">✕</button></div>`).join('');
   const c = $(`#count-${kind}`);
-  c.textContent = `${list.length} attached · at least ${need}`;
+  c.textContent = `${list.length} of ${MAX_PER_KIND} attached`;
   c.className = 'reg-count ' + (list.length >= need ? 'ok' : 'warn');
+  // Hide the add button once the limit is reached.
+  $(`input[data-kind=${kind}]`).closest('label').hidden = list.length >= MAX_PER_KIND;
 }
 
 function form() {
@@ -75,13 +77,13 @@ function form() {
       </fieldset>
 
       <fieldset><legend>Valid ID <span class="reg-count" id="count-id"></span></legend>
-        <p class="hint">Attach at least 2 photos/scans (e.g. front and back, or two different IDs). JPG, PNG, HEIC or PDF.</p>
+        <p class="hint">Attach 1 or 2 photos/scans (e.g. front and back of your ID). JPG, PNG, HEIC or PDF.</p>
         <div class="reg-files" id="files-id"></div>
         <label class="btn reg-add">+ Add ID file<input type="file" data-kind="id" accept="image/*,application/pdf" multiple hidden></label>
       </fieldset>
 
       <fieldset><legend>E-signature <span class="reg-count" id="count-esign"></span></legend>
-        <p class="hint">Attach at least 2 images of your signature (sign on white paper and take a photo).</p>
+        <p class="hint">Attach 1 or 2 images of your signature (sign on white paper and take a photo).</p>
         <div class="reg-files" id="files-esign"></div>
         <label class="btn reg-add">+ Add signature file<input type="file" data-kind="esign" accept="image/*,application/pdf" multiple hidden></label>
       </fieldset>
@@ -122,7 +124,7 @@ function form() {
     const v = Object.fromEntries(new FormData(f));
     if (!v.payment_method) return fail('Please choose how we should pay you.');
     for (const [kind, label] of [['id', 'valid ID'], ['esign', 'e-signature']]) {
-      if (files[kind].length < MIN[kind]) return fail(`Please attach at least ${MIN[kind]} ${label} files.`);
+      if (files[kind].length < MIN[kind]) return fail(`Please attach your ${label} (1 or 2 files).`);
     }
     if (!f.consent.checked) return fail('Please tick the confirmation box.');
     const total = [...files.id, ...files.esign].reduce((a, x) => a + x.size, 0);

@@ -17,8 +17,8 @@ export const router = express.Router();         // mounted after sign-in
 const PAYMENT_METHODS = ['GCash', 'PayMaya', 'Bank'];
 const MAX_FILE = 4 * 1024 * 1024;        // per file, after the browser shrinks photos
 const MAX_TOTAL = 5 * 1024 * 1024;       // whole submission (serverless request limit is ~6 MB)
-const MIN_FILES = { id: 2, esign: 2 };
-const MAX_FILES_PER_KIND = 6;
+const MIN_FILES = { id: 1, esign: 1 };
+const MAX_FILES_PER_KIND = 2;
 
 const clean = (s) => (s == null ? '' : String(s).replace(/\s+/g, ' ').trim());
 const fail = (msg, status = 400) => Object.assign(new Error(msg), { status });
@@ -96,7 +96,7 @@ publicRouter.post('/public/register', wrap(async (req) => {
   for (const [kind, min] of Object.entries(MIN_FILES)) {
     const n = parsed.filter((f) => f.kind === kind).length;
     const label = kind === 'id' ? 'valid ID' : 'e-signature';
-    if (n < min) throw fail(`Please attach at least ${min} ${label} files.`);
+    if (n < min) throw fail(`Please attach your ${label} (1 or 2 files).`);
     if (n > MAX_FILES_PER_KIND) throw fail(`Please attach at most ${MAX_FILES_PER_KIND} ${label} files.`);
   }
 

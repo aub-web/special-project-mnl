@@ -30,7 +30,7 @@ Tables are created automatically on first request.
 **Recorders → 🔗 Registration link** gives a link (`/register?k=…`) to send to new recorders. The form asks for:
 - name, email, contact number and home address;
 - payment method (GCash, PayMaya, or Bank + bank name) and account number;
-- **at least 2 valid-ID files** and **at least 2 e-signature files** (photos are shrunk in the browser; JPG/PNG/WebP/HEIC/PDF up to 4 MB, 5 MB total).
+- **1–2 valid-ID files** and **1–2 e-signature files** (photos are shrunk in the browser; JPG/PNG/WebP/HEIC/PDF up to 4 MB, 5 MB total).
 
 Submissions land in **New registrations** on the Recorders page (with a badge). An admin reviews the details and files,
 then approves them as a new recorder or into an existing one, or rejects them, which deletes the files.
