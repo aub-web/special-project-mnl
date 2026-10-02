@@ -1,9 +1,20 @@
 import pg from 'pg';
 
-// Netlify DB sets NETLIFY_DATABASE_URL; DATABASE_URL works for any other Postgres.
-const connectionString = process.env.NETLIFY_DATABASE_URL || process.env.DATABASE_URL;
+// DATABASE_URL is ours; NETLIFY_DATABASE_URL is what Netlify DB sets automatically. Ours wins.
+const envName = process.env.DATABASE_URL ? 'DATABASE_URL' : 'NETLIFY_DATABASE_URL';
+const connectionString = (process.env[envName] || '').trim().replace(/^["']|["']$/g, '');
 if (!connectionString) {
   throw new Error('No database configured. Set DATABASE_URL (or NETLIFY_DATABASE_URL) — see README.');
+}
+// Catch common paste mistakes early, without ever echoing the password.
+{
+  let host = '';
+  try { host = new URL(connectionString).hostname; } catch {}
+  if (!/^postgres(ql)?:\/\//.test(connectionString) || !host.includes('.')) {
+    throw new Error(`${envName} doesn't look like a Postgres connection string ` +
+      `(it starts with "${connectionString.slice(0, 11)}…" and the host is "${host || 'unreadable'}"). ` +
+      'It should be the whole value starting with postgresql:// — without the "DATABASE_URL=" part.');
+  }
 }
 
 // Serverless functions each hold their own pool, so keep it small.
