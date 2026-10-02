@@ -2,6 +2,7 @@
 import express from 'express';
 import { pool, q, one, tx, migrate, getSettings, resolveRecorder, resolveLocation, addAlias } from './db.js';
 import { requireUser, requireAdmin, login, setSessionCookie, clearSessionCookie, hashPassword, PUBLIC_USER } from './auth.js';
+import { router as businessRoutes } from './businesses.js';
 
 export const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -73,6 +74,7 @@ app.post('/api/auth/logout', wrap((req, res) => { clearSessionCookie(res); retur
 
 // Everything below needs a signed-in user.
 app.use('/api', requireUser);
+app.use('/api', businessRoutes);
 app.get('/api/auth/me', wrap((req) => req.user));
 
 app.post('/api/auth/password', wrap(async (req) => {
@@ -353,7 +355,7 @@ app.delete('/api/followups/:id', wrap(async (req) => {
 
 // ---------- Dashboard ----------
 app.get('/api/dashboard', wrap(async () => {
-  const [totals, byWeek, byCategory, byLocation, topRecorders, fu, pr] = await Promise.all([
+  const [totals, byWeek, byCategory, byLocation, topRecorders, fu, pr, bizTotals] = await Promise.all([
     one(`SELECT COUNT(*)::int sessions, COALESCE(SUM(hours),0) hours, COALESCE(SUM(${USD}),0) usd, COALESCE(SUM(${PHP}),0) php,
       COUNT(DISTINCT recorder_id)::int recorders, COUNT(DISTINCT location_id)::int locations, MIN(date) first_date, MAX(date) last_date FROM sessions s`),
     q(`SELECT to_char(date_trunc('week', s.date::date), 'YYYY-MM-DD') AS week,
@@ -366,8 +368,10 @@ app.get('/api/dashboard', wrap(async () => {
        FROM sessions s JOIN recorders r ON r.id = s.recorder_id GROUP BY r.id, r.name ORDER BY hours DESC LIMIT 10`),
     one(`SELECT COUNT(*)::int n FROM followups WHERE status != 'Resolved'`),
     one(`SELECT COUNT(*)::int n FROM periods WHERE status = 'Open'`),
+    one(`SELECT (SELECT COUNT(*)::int FROM businesses WHERE active) businesses,
+                COALESCE(SUM(shifts),0) shifts, COALESCE(SUM(shifts * scenes * rate_php),0) payout FROM business_shifts`),
   ]);
-  return { totals, byWeek, byCategory, byLocation, topRecorders, openFollowups: fu.n, openPeriods: pr.n };
+  return { totals, byWeek, byCategory, byLocation, topRecorders, openFollowups: fu.n, openPeriods: pr.n, bizTotals };
 }));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));

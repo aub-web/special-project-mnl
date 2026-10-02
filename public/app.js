@@ -119,12 +119,13 @@ async function lookups(force = false) {
 const CATEGORIES = ['Studio', 'Home Shift', 'OT'];
 
 // ---------- routes ----------
-const routes = { '': dashboard, log, sessions, periods, period, recorders, locations, followups, settings, users };
+const routes = { '': dashboard, log, sessions, periods, period, recorders, locations, followups, settings, users, businesses, business };
 
 async function render() {
   if (!me) return;
   const [route, ...args] = location.hash.replace(/^#\/?/, '').split('?')[0].split('/');
-  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (route === 'period' ? 'periods' : route)));
+  const navRoute = { period: 'periods', business: 'businesses' }[route] ?? route;
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === navRoute));
   // Fresh element per page so event listeners from the previous page don't pile up.
   const fresh = view.cloneNode(false);
   view.replaceWith(fresh);
@@ -146,9 +147,32 @@ async function refreshBadge() {
 window.addEventListener('hashchange', render);
 
 // ---------- Dashboard ----------
+/** Show only the last 4 digits; the full number is one click away. */
+const maskAcct = (n) => (n ? `<button class="ghost acct" data-acct="${esc(n)}" title="Click to show full number">•••• ${esc(String(n).slice(-4))}</button>` : '<span class="muted">—</span>');
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-acct]');
+  if (b) { e.preventDefault(); e.stopPropagation(); b.textContent = b.dataset.acct; b.removeAttribute('data-acct'); }
+}, true);
+
+function businessCard(b) {
+  const lastActive = [b.last_date, b.last_session].filter(Boolean).sort().at(-1);
+  return `<a class="card biz" href="#/business/${b.id}">
+    <div class="biz-head"><b>${esc(b.name)}</b>${b.active ? '' : ' <span class="pill">inactive</span>'}</div>
+    <div class="biz-owner">${esc(b.owner_name || 'No owner on file')}</div>
+    <div class="biz-bank"><span class="pill">${esc(b.bank_name || 'No bank')}</span> ${maskAcct(b.bank_account_no)}</div>
+    <div class="biz-stats">
+      <div><span>Shifts hosted</span><b>${hrs(b.shifts)}</b></div>
+      <div><span>Business payout</span><b>${php(b.payout)}</b></div>
+      <div><span>Recorder hours</span><b>${hrs(b.recorder_hours)}</b></div>
+      <div><span>Recorders</span><b>${b.recorders}</b></div>
+    </div>
+    <div class="biz-foot muted">${b.location ? `📍 ${esc(b.location)}` : '<span class="pill warn">No location linked</span>'} · last active ${fmtDate(lastActive)}</div>
+  </a>`;
+}
+
 async function dashboard() {
-  const d = await api('/dashboard');
-  const t = d.totals;
+  const [d, biz] = await Promise.all([api('/dashboard'), api('/businesses')]);
+  const t = d.totals, bt = d.bizTotals;
   const weeks = d.byWeek.slice(-10);
   const maxW = Math.max(1, ...weeks.map((w) => w.hours));
   const maxL = Math.max(1, ...d.byLocation.map((l) => l.hours));
@@ -157,11 +181,18 @@ async function dashboard() {
       <a class="btn primary" href="#/log">+ Log hours</a></div>
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(t.hours)}</div><div class="sub">${t.sessions} sessions</div></div>
-      <div class="card kpi"><div class="label">Total payout</div><div class="value">${php(t.php)}</div><div class="sub">${usd(t.usd)}</div></div>
+      <div class="card kpi"><div class="label">Recorder payout</div><div class="value">${php(t.php)}</div><div class="sub">${usd(t.usd)}</div></div>
+      <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(bt.payout)}</div><div class="sub">${hrs(bt.shifts)} shifts · ${bt.businesses} businesses</div></div>
       <div class="card kpi"><div class="label">Recorders</div><div class="value">${t.recorders}</div><div class="sub">across ${t.locations} locations</div></div>
       <div class="card kpi"><div class="label">Needs attention</div><div class="value">${d.openFollowups}</div>
         <div class="sub"><a href="#/followups">follow-ups</a> · ${d.openPeriods} <a href="#/periods">open period(s)</a></div></div>
     </div>
+    <div class="section-head"><h2>Businesses</h2>
+      <span class="muted">${biz.synced_at ? `Synced from Google Sheet ${new Date(biz.synced_at).toLocaleString()}` : 'Not synced yet'} · <a href="#/businesses">Manage</a></span></div>
+    ${biz.businesses.length
+      ? `<div class="grid biz-grid">${biz.businesses.filter((b) => b.active).map(businessCard).join('')}</div>`
+      : `<div class="card empty">No businesses yet. ${me.role === 'admin' ? 'Open <a href="#/businesses">Businesses</a> and press <b>Sync from Google Sheet</b>.' : 'Ask an admin to sync them from the Google Sheet.'}</div>`}
+    <div style="height:14px"></div>
     <div class="grid two">
       <div class="card"><h2>Hours per week</h2>
         <div class="chart">${weeks.map((w) => `<div class="col" title="${hrs(w.hours)} h · ${php(w.php)} · ${w.recorders} recorders">
@@ -548,6 +579,110 @@ async function followups() {
   });
 }
 
+// ---------- Businesses ----------
+function businessFields(b = {}, locs = []) {
+  return [
+    { name: 'name', label: 'Business name', value: b.name, required: true, full: true },
+    { name: 'owner_name', label: "Owner's name", value: b.owner_name || '', full: true },
+    { name: 'bank_name', label: 'Bank / wallet', value: b.bank_name || '' },
+    { name: 'bank_account_no', label: 'Account no.', value: b.bank_account_no || '' },
+    { name: 'account_name', label: 'Account name', value: b.account_name || '', full: true },
+    { name: 'gcash_owner', label: 'GCash owner', value: b.gcash_owner || '', full: true },
+    { name: 'location_id', label: 'Recorder location (for hours/recorders)', type: 'select', full: true,
+      options: [['', '— none —'], ...locs.map((l) => [l.id, l.name])], value: b.location_id ?? '' },
+    { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Inactive']], value: String(b.active ?? true) },
+    { name: 'notes', label: 'Notes', type: 'textarea', value: b.notes || '', full: true },
+  ];
+}
+const businessBody = (v) => ({ ...v, active: v.active === 'true', location_id: v.location_id ? Number(v.location_id) : null });
+
+async function businesses() {
+  const [{ businesses: list, synced_at }, { locations: locs }] = await Promise.all([api('/businesses'), lookups()]);
+  const admin = me.role === 'admin';
+  view.innerHTML = `
+    <div class="head"><div><h1>Businesses</h1>
+      <p>Host businesses and what they're owed (shifts × scenes × rate). ${synced_at ? `Last synced ${new Date(synced_at).toLocaleString()}.` : 'Not synced yet.'}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${admin ? '<button id="bz-sync">⟳ Sync from Google Sheet</button>' : ''}<button class="primary" id="bz-new">+ Add business</button></div></div>
+    ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Business</th><th>Owner</th><th>Bank</th><th>Account</th><th>Location</th><th class="num">Shifts</th><th class="num">Payout</th><th class="num">Recorder h</th><th>Last</th></tr></thead><tbody>
+    ${list.map((b) => `<tr><td><a href="#/business/${b.id}"><b>${esc(b.name)}</b></a>${b.active ? '' : ' <span class="pill">inactive</span>'}</td>
+      <td>${esc(b.owner_name || '—')}</td><td>${esc(b.bank_name || '—')}</td><td>${maskAcct(b.bank_account_no)}</td>
+      <td>${b.location ? esc(b.location) : '<span class="pill warn">none</span>'}</td>
+      <td class="num">${hrs(b.shifts)}</td><td class="num">${php(b.payout)}</td><td class="num">${hrs(b.recorder_hours)}</td>
+      <td>${fmtDate([b.last_date, b.last_session].filter(Boolean).sort().at(-1))}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="card empty">No businesses yet.</div>'}`;
+  $('#bz-new').onclick = async () => {
+    const v = await modal({ title: 'Add business', fields: businessFields({}, locs) });
+    if (!v) return;
+    try { const b = await api('/businesses', { method: 'POST', body: businessBody(v) }); location.hash = '#/business/' + b.id; }
+    catch (e) { toast(e.message, true); }
+  };
+  if (admin) $('#bz-sync').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Syncing…';
+    try {
+      const r = await api('/businesses/sync', { method: 'POST' });
+      toast(`Synced ${r.profiles} profiles and ${r.shifts} shift days from ${r.tabs.length} summary tab(s)`);
+      render();
+    } catch (err) { toast(err.message, true); e.target.disabled = false; e.target.textContent = '⟳ Sync from Google Sheet'; }
+  };
+}
+
+async function business(id) {
+  const [b, { locations: locs }] = await Promise.all([api('/businesses/' + id), lookups()]);
+  const row = (k, v) => `<dt>${k}</dt><dd>${v || '<span class="muted">—</span>'}</dd>`;
+  view.innerHTML = `
+    <div class="head"><div><a href="#/businesses" class="muted">← Businesses</a><h1>${esc(b.name)}</h1>
+      <p>${b.location ? `Recorders log hours here as <a href="#/sessions?${qs({ from: b.first_session, to: b.last_session })}">${esc(b.location)}</a>` : 'No recorder location linked'}</p></div>
+      <div style="display:flex;gap:8px"><button id="bz-edit">Edit profile</button><button class="primary" id="bz-shift">+ Add shift</button></div></div>
+    <div class="grid kpis">
+      <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(b.payout)}</div><div class="sub">${hrs(b.shifts)} shifts</div></div>
+      <div class="card kpi"><div class="label">Recorder hours</div><div class="value">${hrs(b.recorder_hours)}</div><div class="sub">${php(b.recorder_php)} to recorders</div></div>
+      <div class="card kpi"><div class="label">Recorders</div><div class="value">${b.recorders}</div></div>
+      <div class="card kpi"><div class="label">Active</div><div class="value" style="font-size:16px">${fmtDate(b.first_date || b.first_session)} – ${fmtDate([b.last_date, b.last_session].filter(Boolean).sort().at(-1))}</div></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h2>Profile</h2><dl class="profile">
+        ${row('Owner', esc(b.owner_name))}${row('Bank / wallet', esc(b.bank_name))}${row('Account no.', b.bank_account_no ? maskAcct(b.bank_account_no) : '')}
+        ${row('Account name', esc(b.account_name))}${row('GCash owner', esc(b.gcash_owner))}${row('Notes', esc(b.notes))}
+      </dl></div>
+      <div class="card"><h2>Recorder activity</h2>
+        ${b.recorder_log.length ? `<table><thead><tr><th>Date</th><th class="num">Recorders</th><th class="num">Hours</th><th class="num">Paid to recorders</th></tr></thead><tbody>
+        ${b.recorder_log.map((r) => `<tr><td>${weekday(r.date)} ${fmtDate(r.date)}</td><td class="num">${r.recorders}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
+        </tbody></table>` : '<p class="muted">No recorder sessions at the linked location.</p>'}</div>
+    </div>
+    <div class="section-head" style="margin-top:14px"><h2>Shifts hosted</h2><span class="muted">Rows marked “sheet” come from the Google Sheet and update on sync</span></div>
+    <div class="table-wrap">${b.shift_log.length ? `<table><thead><tr><th>Date</th><th class="num">Shifts</th><th class="num">Scenes</th><th class="num">Rate</th><th class="num">Payout</th><th>Source</th><th></th></tr></thead><tbody>
+      ${b.shift_log.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td class="num">${hrs(s.shifts)}</td><td class="num">${hrs(s.scenes)}</td>
+        <td class="num">${php(s.rate_php)}</td><td class="num"><b>${php(s.payout)}</b></td>
+        <td><span class="pill ${s.source === 'sheet' ? 'accent' : ''}">${esc(s.source)}</span> <span class="muted" style="font-size:12px">${esc(s.source === 'sheet' ? s.notes : s.notes || '')}</span></td>
+        <td class="num">${s.source === 'sheet' ? '' : `<button class="ghost danger" data-del="${s.id}">Delete</button>`}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td>Total</td><td class="num">${hrs(b.shifts)}</td><td></td><td></td><td class="num">${php(b.payout)}</td><td></td><td></td></tr></tfoot></table>`
+      : '<div class="empty">No shifts recorded yet.</div>'}</div>`;
+  $('#bz-edit').onclick = async () => {
+    const v = await modal({ title: 'Edit business', fields: businessFields(b, locs) });
+    if (!v) return;
+    try { await api('/businesses/' + id, { method: 'PUT', body: businessBody(v) }); toast('Saved'); render(); }
+    catch (e) { toast(e.message, true); }
+  };
+  $('#bz-shift').onclick = async () => {
+    const last = b.shift_log[0];
+    const v = await modal({ title: `Add shift · ${b.name}`, fields: [
+      { name: 'date', label: 'Date', type: 'date', value: today(), required: true },
+      { name: 'shifts', label: 'Shifts', type: 'number', step: '0.5', value: 1, required: true },
+      { name: 'scenes', label: 'Scenes', type: 'number', step: '1', value: last?.scenes ?? 3, required: true },
+      { name: 'rate_php', label: 'Rate (PHP)', type: 'number', step: '0.01', value: last?.rate_php ?? cache.settings?.business_rate_php ?? 850, required: true },
+      { name: 'notes', label: 'Notes', full: true },
+    ] });
+    if (!v) return;
+    try { await api('/business-shifts', { method: 'POST', body: { ...v, business_id: b.id } }); toast('Shift added'); render(); }
+    catch (e) { toast(e.message, true); }
+  };
+  view.addEventListener('click', async (e) => {
+    const sid = e.target.dataset.del; if (!sid) return;
+    if (!confirm('Delete this shift?')) return;
+    try { await api('/business-shifts/' + sid, { method: 'DELETE' }); render(); } catch (err) { toast(err.message, true); }
+  });
+}
+
 // ---------- Settings ----------
 async function settings() {
   const s = await api('/settings');
@@ -560,6 +695,8 @@ async function settings() {
         <label class="f">Recording rate (USD per hour)<input name="rate_usd" type="number" step="0.01" value="${s.rate_usd}" ${admin ? '' : 'disabled'}></label>
         <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}" ${admin ? '' : 'disabled'}></label>
         <p class="muted" style="margin:0">= <b id="st-php">${php(s.rate_usd * s.fx_rate)}</b> per hour</p>
+        <label class="f">Business rate (PHP per shift × scene)<input name="business_rate_php" type="number" step="0.01" value="${s.business_rate_php}" ${admin ? '' : 'disabled'}></label>
+        <label class="f">Business Google Sheet ID<input name="business_sheet_id" value="${esc(s.business_sheet_id)}" ${admin ? '' : 'disabled'}></label>
         ${admin ? '<div><button class="primary">Save rates</button></div>' : ''}
       </form>
       <form id="pw-form" class="card grid">

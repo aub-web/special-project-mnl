@@ -134,7 +134,39 @@ CREATE TABLE IF NOT EXISTS followups (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-INSERT INTO settings (key, value) VALUES ('rate_usd', '2.5'), ('fx_rate', '60'), ('ot_rate_php', '150')
+-- Host businesses (from the "Studio Business Payout" sheet → Business Profile).
+CREATE TABLE IF NOT EXISTS businesses (
+  id              SERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  owner_name      TEXT,
+  bank_name       TEXT,
+  bank_account_no TEXT,
+  account_name    TEXT,            -- "Owner's ID" column: name on the account
+  gcash_owner     TEXT,
+  location_id     INTEGER REFERENCES locations(id) ON DELETE SET NULL,  -- where recorders log hours for this business
+  active          BOOLEAN NOT NULL DEFAULT TRUE,
+  notes           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS businesses_name_ci ON businesses (lower(name));
+
+-- Shifts hosted per day. Business payout = shifts × scenes × rate_php.
+CREATE TABLE IF NOT EXISTS business_shifts (
+  id          SERIAL PRIMARY KEY,
+  business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  date        TEXT NOT NULL,                 -- YYYY-MM-DD
+  shifts      DOUBLE PRECISION NOT NULL,
+  scenes      DOUBLE PRECISION NOT NULL,
+  rate_php    DOUBLE PRECISION NOT NULL,
+  notes       TEXT,
+  source      TEXT NOT NULL DEFAULT 'web',   -- 'sheet' rows are replaced on every sync
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_business_shifts_date ON business_shifts(date);
+
+INSERT INTO settings (key, value) VALUES ('rate_usd', '2.5'), ('fx_rate', '60'), ('ot_rate_php', '150'),
+  ('business_rate_php', '850'),
+  ('business_sheet_id', '1904ps8_vBAG2Nezf7O9gnJveCRNRt38OoC35Ra2W2a8')
 ON CONFLICT (key) DO NOTHING;
 `;
 

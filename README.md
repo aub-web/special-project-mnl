@@ -59,6 +59,22 @@ The other summary sheets are used only to cross-check the daily sheets. The impo
 either by ignoring middle initials or through the alias list in the script. Day-to-day entry in the app matches only exact names
 or known aliases, so two different people are never merged by accident.
 
+## Businesses (synced from Google Sheets)
+
+Business profiles and hosted shifts come from the **Studio Business Payout** Google Sheet. The sheet ID is in Settings.
+An admin presses **Businesses → Sync from Google Sheet** to pull the latest:
+
+- **Business Profile** tab → owner, bank, account number, account name, GCash owner (matched by business name)
+- **Summary tabs** whose header has `Name of Business … Scene | Rate` → one shift row per business per day.
+  Business payout = shifts × scenes × rate (₱850 by default).
+
+Each sync replaces the sheet-sourced shift rows. Shifts added in the app are kept.
+Each business is linked automatically to the recorder location with the matching name, so its page also shows recorder hours.
+You can change the link in **Edit profile**.
+
+The sheet must be shared as **Anyone with the link can view** for the sync to work.
+That also means anyone holding the link can see the bank details in it.
+
 ## Pages
 
 | Page | Replaces | What it does |
@@ -68,7 +84,8 @@ or known aliases, so two different people are never merged by accident.
 | Sessions | — | Filter/search every session; edit or delete |
 | Pay periods | `Summary MM/DD - MM/DD` sheets | Recorder × day pivot built from sessions, CSV export, print, mark each person paid |
 | Recorders | `Sheet2` roster | Accounts, aliases, merge duplicates (old name kept as alias) |
-| Locations | — | Sites/businesses, merge duplicates |
+| Businesses | Studio Business Payout sheet | Owner + bank profile, shifts hosted, business payout, recorder activity; sync from Google Sheet |
+| Locations | — | Recording sites, merge duplicates |
 | Follow-ups | `Follow - up` sheet | Payment problems: expected vs received, old/new account |
 | Settings | — | Default USD rate and PHP exchange rate; change your password |
 | Users | — | Admins add, disable or reset logins |
@@ -82,6 +99,7 @@ so changing the default rate never rewrites past pay.
 api.js                    Express app with all /api routes (used locally and on Netlify)
 auth.js                   Password hashing (scrypt), signed session cookies
 db.js                     Postgres pool, schema, name/alias matching
+businesses.js             Businesses, shifts, Google Sheet sync
 server.js                 Local dev server (API + static files)
 netlify/functions/api.mjs Netlify Function wrapper
 netlify.toml              Publish dir, /api/* → function redirect, security headers
