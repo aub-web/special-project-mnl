@@ -10,6 +10,7 @@
 //                            Locations come from notes like "Mt Moriah (3-12)" written under the table.
 //   OT Staff               → OT sessions
 import express from 'express';
+import { createHash } from 'node:crypto';
 import * as XLSX from 'xlsx';
 import { q, tx, getSettings, resolveRecorder, addAlias } from './db.js';
 import { requireAdmin } from './auth.js';
@@ -60,6 +61,7 @@ export function parsePayoutWorkbook(wb) {
   const rows = (n) => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null, blankrows: true });
   const sessions = [];
   const appAccounts = [];
+  const idLinks = [];
   const add = (s) => { if (s.hours > 0 && clean(s.who)) sessions.push({ ...s, who: clean(s.who) }); };
 
   // 1. Daily tabs. A date only counts as "covered" if its tab actually has hours (09/18 exists but is empty).
@@ -139,14 +141,24 @@ export function parsePayoutWorkbook(wb) {
         }
       });
     }
-    const whereFor = (sheetRow) => ranges.find((x) => sheetRow >= x.from && sheetRow <= x.to)?.name || fallback || 'Unassigned';
+    // A LOCATION column (one dropdown per row) wins over the "(a-b)" notes; the notes still cover blank cells.
+    const locCol = data[h].findIndex((x) => /^location$/i.test(clean(x)));
+    const idCol = data[h].findIndex((x) => /^id$/i.test(clean(x)));
+    const whereFor = (sheetRow, r) => (locCol >= 0 && clean(r[locCol]))
+      || ranges.find((x) => sheetRow >= x.from && sheetRow <= x.to)?.name || fallback || 'Unassigned';
 
     for (let idx = h + 1; idx < data.length; idx++) {
       if (totalIdx > 0 && idx >= totalIdx) break;
       const r = data[idx];
       if (!clean(r[0]) || isTotal(r[0])) continue;
       for (const c of dateCols) {
-        add({ who: r[0], where: whereFor(idx + 1), date: c.date, hours: num(r[c.i]), category: 'Studio', notes: notesByDate[c.date] || null, source: name });
+        add({ who: r[0], where: whereFor(idx + 1, r), date: c.date, hours: num(r[c.i]), category: 'Studio', notes: notesByDate[c.date] || null, source: name });
+      }
+      // ID file chips export as hyperlinks — keep them for recorders who have no ID link yet.
+      if (idCol >= 0) {
+        const range = XLSX.utils.decode_range(wb.Sheets[name]['!ref']);
+        const link = wb.Sheets[name][XLSX.utils.encode_cell({ r: range.s.r + idx, c: range.s.c + idCol })]?.l?.Target;
+        if (/^https:\/\/(drive|docs)\.google\.com\//.test(link || '')) idLinks.push({ who: clean(r[0]), url: link, label: clean(r[idCol]) });
       }
     }
     dateCols.forEach((c) => fromSummary.add(c.date));
@@ -173,7 +185,7 @@ export function parsePayoutWorkbook(wb) {
       }
     }
   }
-  return { sessions, appAccounts };
+  return { sessions, appAccounts, idLinks };
 }
 
 /**
@@ -181,7 +193,7 @@ export function parsePayoutWorkbook(wb) {
  * `c` is a transaction client.
  */
 export async function applyPayoutSessions(c, wb, { rate_php }) {
-  const { sessions, appAccounts } = parsePayoutWorkbook(wb);
+  const { sessions, appAccounts, idLinks } = parsePayoutWorkbook(wb);
   if (!sessions.length) throw Object.assign(new Error('No hours found in this file. Is it the Studio Payout Summary sheet?'), { status: 400 });
 
   const recCache = new Map();
@@ -219,6 +231,10 @@ export async function applyPayoutSessions(c, wb, { rate_php }) {
   for (const a of appAccounts) {
     await q('UPDATE recorders SET app_account = COALESCE(app_account, $1) WHERE id = $2', [a.account, await recorder(a.who)], c);
   }
+  for (const l of idLinks) {
+    await q(`UPDATE recorders SET id_document_url = $1, id_document = COALESCE(id_document, $2)
+      WHERE id = $3 AND id_document_url IS NULL`, [l.url, l.label || null, await recorder(l.who)], c);
+  }
 
   // Multiset diff so the admin sees exactly what the sync changed.
   const count = (list) => list.reduce((m, s) => m.set(keyOf(s), (m.get(keyOf(s)) || 0) + 1), new Map());
@@ -234,14 +250,23 @@ export async function applyPayoutSessions(c, wb, { rate_php }) {
   };
 }
 
-async function runSync(wb) {
+/** Fingerprint of what the sheet says, so the automatic sync only rewrites sessions when something changed. */
+export const sheetFingerprint = (wb) => createHash('sha256').update(JSON.stringify(parsePayoutWorkbook(wb))).digest('hex');
+
+async function setSetting(key, value, c) {
+  await q(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, [key, value], c);
+}
+
+export async function runSync(wb) {
   const settings = await getSettings();
+  const fingerprint = sheetFingerprint(wb);
   const once = () => tx(async (c) => {
     // Lock out concurrent syncs up front so two admins clicking at once queue instead of deadlocking.
     await q('LOCK TABLE sessions IN SHARE ROW EXCLUSIVE MODE', [], c);
     const result = await applyPayoutSessions(c, wb, settings);
     const at = new Date().toISOString();
-    await q(`INSERT INTO settings (key, value) VALUES ('payout_synced_at', $1) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, [at], c);
+    await setSetting('payout_synced_at', at, c);
+    await setSetting('payout_sheet_fingerprint', fingerprint, c);
     return { ...result, synced_at: at };
   });
   // The whole sync is one transaction, so retrying after a deadlock (40P01) is safe.
@@ -249,6 +274,25 @@ async function runSync(wb) {
     try { return await once(); }
     catch (e) { if (e.code !== '40P01' || attempt >= 3) throw e; }
   }
+}
+
+/**
+ * Called every 10 minutes by the scheduled Netlify function (netlify/functions/sheet-sync.mjs).
+ * Skips the database entirely when the sheet hasn't changed. Records the outcome for the Hours sheet bar.
+ */
+export async function autoSyncPayout() {
+  const settings = await getSettings();
+  const status = (ok, message) => setSetting('payout_auto_status', JSON.stringify({ at: new Date().toISOString(), ok, message }));
+  let wb;
+  try { wb = await fetchWorkbook(String(settings.payout_sheet_id)); }
+  catch {
+    await status(false, `Can't read the sheet automatically — share it as "Anyone with the link can view" (or use Upload .xlsx).`);
+    return { skipped: 'unreadable' };
+  }
+  if (sheetFingerprint(wb) === settings.payout_sheet_fingerprint) { await status(true, 'Up to date'); return { skipped: 'unchanged' }; }
+  const r = await runSync(wb);
+  await status(true, `Synced: ${r.added.length} added/changed, ${r.removed.length} removed`);
+  return r;
 }
 
 const wrap = (fn) => async (req, res) => {

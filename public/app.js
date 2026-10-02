@@ -363,8 +363,13 @@ async function log() {
 async function hoursSyncBar() {
   if (!isAdmin()) return '';
   const s = cache.settings || (await api('/settings'));
+  let auto = null;
+  try { auto = JSON.parse(s.payout_auto_status || 'null'); } catch {}
   return `<div class="card sync-bar">
-    <div><b>Hours sheet</b> <span class="muted">· Studio Payout Summary · ${s.payout_synced_at ? `last synced ${new Date(s.payout_synced_at).toLocaleString()}` : 'not synced from the app yet'}</span></div>
+    <div><b>Hours sheet</b> <span class="muted">· Studio Payout Summary · ${s.payout_synced_at ? `last changes pulled ${new Date(s.payout_synced_at).toLocaleString()}` : 'not synced from the app yet'}</span>
+      <div style="font-size:12px;margin-top:2px">${auto
+        ? `<span class="pill ${auto.ok ? 'ok' : 'warn'}">Auto-sync every 10 min</span> <span class="${auto.ok ? 'muted' : ''}" style="${auto.ok ? '' : 'color:var(--warn)'}">${esc(auto.message)} · checked ${new Date(auto.at).toLocaleTimeString()}</span>`
+        : '<span class="muted">Auto-sync every 10 min starts after the next deploy.</span>'}</div></div>
     <div class="head-actions">
       <button id="hs-sync">⟳ Sync from Google Sheet</button>
       <label class="btn" for="hs-file">⬆ Upload .xlsx</label><input type="file" id="hs-file" accept=".xlsx" hidden>
