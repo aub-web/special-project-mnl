@@ -66,7 +66,7 @@ What gets imported (chosen so nothing is counted twice):
 - **HOME 08/24–08/28** → Home Shift (one period-total row per person; the sheet has no per-shift detail)
 - **HOME 09/01–09/05** → Home Shift, one session per shift
 - **Summary 09/18–09/27** and **Copy of Summary 09/28–10/04** → Studio sessions (no daily sheets exist for those days).
-  Locations come from the "Business Name" notes; rows without one go under **Unassigned**.
+  Locations come from the "Business Name" notes under each summary (e.g. "SP (Naruto Robot Mount In-Lab) - Atlas Capture MNL (7-15)"); rows without one go under **Unassigned**.
 - **OT Staff** → OT sessions (₱150/h)
 - **Follow - up** → follow-ups
 

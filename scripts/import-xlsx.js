@@ -179,7 +179,10 @@ await tx(async (c) => {
     (row) => (row >= 3 && row <= 12 ? 'Mt. Moriah' : row >= 17 && row <= 19 ? 'ERS Sip Up Cafe' : 'Unassigned'),
     { '2026-09-23': noPaper, '2026-09-24': noPaper, '2026-09-25': noPaper },
   );
-  await fromSummary('Copy of Summary 0928 - 1004', (row) => (row >= 3 && row <= 5 ? 'Oh Mama Maginhawa Branch' : 'Unassigned'));
+  await fromSummary('Copy of Summary 0928 - 1004', (row) => (
+    row >= 3 && row <= 5 ? 'Oh Mama Maginhawa Branch'
+      : row >= 7 && row <= 15 ? 'SP (Naruto Robot Mount In-Lab) - Atlas Capture MNL'
+        : 'Unassigned'));
 
   // 6. OT Staff — several blocks, each "title row / Name header / rows / Total"
   {
