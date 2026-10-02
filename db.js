@@ -188,6 +188,46 @@ ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_hard_copy TEXT;   -- "do
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS id_document_url TEXT;
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_url TEXT;
 
+-- Contract tag set by admins only: Done | Pending. Seeded from whether a signed contract is on file.
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_status TEXT;
+UPDATE recorders SET contract_status = CASE WHEN contract IS NOT NULL OR contract_url IS NOT NULL THEN 'Done' ELSE 'Pending' END
+  WHERE contract_status IS NULL;
+
+-- Public registration form (/register?k=…). Submissions wait for an admin; nothing public writes to recorders directly.
+CREATE TABLE IF NOT EXISTS registrations (
+  id             SERIAL PRIMARY KEY,
+  name           TEXT NOT NULL,
+  email          TEXT NOT NULL,
+  contact        TEXT NOT NULL,
+  address        TEXT NOT NULL,
+  payment_method TEXT NOT NULL,            -- GCash | PayMaya | Bank
+  bank_name      TEXT,
+  account_no     TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'Pending',   -- Pending | Approved | Rejected
+  recorder_id    INTEGER REFERENCES recorders(id) ON DELETE SET NULL,
+  reviewed_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at    TIMESTAMPTZ,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Uploaded ID / e-signature files. Stored in the database (served only to admins and the recorder themselves).
+CREATE TABLE IF NOT EXISTS recorder_files (
+  id              SERIAL PRIMARY KEY,
+  registration_id INTEGER REFERENCES registrations(id) ON DELETE CASCADE,
+  recorder_id     INTEGER REFERENCES recorders(id) ON DELETE SET NULL,
+  kind            TEXT NOT NULL CHECK (kind IN ('id', 'esign')),
+  filename        TEXT NOT NULL,
+  mime            TEXT NOT NULL,
+  size            INTEGER NOT NULL,
+  data            BYTEA NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_recorder_files_recorder ON recorder_files(recorder_id);
+
+-- The key in the registration link; regenerate it to switch off an old link.
+INSERT INTO settings (key, value) VALUES ('registration_key', replace(gen_random_uuid()::text, '-', ''))
+ON CONFLICT (key) DO NOTHING;
+
 -- Self sign-up: new accounts wait for an admin to approve them.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
 -- Roles: admin | sdr | set_director | recorder. A recorder login sees only the recorder whose
@@ -218,7 +258,7 @@ ON CONFLICT (key) DO NOTHING;
 
 // Bump when SCHEMA changes. The schema (with its ALTER TABLEs, which lock tables) only runs when the
 // stored version differs, so serverless cold starts don't block a running sync.
-const SCHEMA_VERSION = '2026-10-02.pesos';
+const SCHEMA_VERSION = '2026-10-02.registration';
 
 let migrated;
 /** Create/upgrade tables if needed. Cached so each cold start checks once. */

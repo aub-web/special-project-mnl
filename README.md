@@ -25,6 +25,21 @@ npm start                      # http://localhost:3000 (reads .env)
 
 Tables are created automatically on first request.
 
+## Recorder registration link
+
+**Recorders → 🔗 Registration link** gives a link (`/register?k=…`) to send to new recorders. The form asks for:
+- name, email, contact number and home address;
+- payment method (GCash, PayMaya, or Bank + bank name) and account number;
+- **at least 2 valid-ID files** and **at least 2 e-signature files** (photos are shrunk in the browser; JPG/PNG/WebP/HEIC/PDF up to 4 MB, 5 MB total).
+
+Submissions land in **New registrations** on the Recorders page (with a badge). An admin reviews the details and files,
+then approves them as a new recorder or into an existing one, or rejects them, which deletes the files.
+The public form never edits recorders directly, so the link can't be used to change someone's payout account.
+**Make a new link** turns off the old one.
+
+Files are stored in Postgres (`recorder_files`), checked by their actual bytes, and served only to admins and, for their own files, to that recorder.
+The **contract** tag (Done / Pending) is set by admins only: click it on the Recorders list.
+
 ## Roles
 
 | Role | Can open | Notes |

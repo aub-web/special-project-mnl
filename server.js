@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { app } from './api.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
-app.use(express.static(join(root, 'public')));
+app.use(express.static(join(root, 'public'), { extensions: ['html'] })); // /register → register.html (Netlify does the same)
 app.get('*', (req, res) => res.sendFile(join(root, 'public', 'index.html')));
 
 const PORT = Number(process.env.PORT) || 3000;

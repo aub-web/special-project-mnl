@@ -5,6 +5,7 @@ import { requireUser, requireAdmin, login, signup, setSessionCookie, clearSessio
 import { router as businessRoutes } from './businesses.js';
 import { router as recorderSyncRoutes, driveUrl } from './recorders-sync.js';
 import { router as payoutSyncRoutes } from './payout-sync.js';
+import { router as registrationRoutes, publicRouter as registrationPublicRoutes } from './registrations.js';
 
 export const app = express();
 app.use(express.json({ limit: '8mb' })); // room for an uploaded .xlsx (base64)
@@ -79,6 +80,9 @@ app.post('/api/auth/signup', wrap(async (req, res) => {
 }));
 app.post('/api/auth/logout', wrap((req, res) => { clearSessionCookie(res); return { ok: true }; }));
 
+// Public recorder registration form (key-protected; never writes to recorders directly).
+app.use('/api', registrationPublicRoutes);
+
 // Everything below needs a signed-in user.
 app.use('/api', requireUser);
 
@@ -93,7 +97,7 @@ const ACCESS = {
   sdr: [['GET', '/dashboard', true], ['*', '/businesses'], ['*', '/business-shifts'], ['GET', '/locations', true], ['GET', '/settings', true]],
   set_director: [['GET', '/recorders', true], ['GET', '/locations', true], ['GET', '/sessions', true], ['POST', '/sessions/bulk', true],
     ['PUT', '/sessions/'], ['DELETE', '/sessions/'], ['GET', '/settings', true]],
-  recorder: [['GET', '/me/recorder', true]],
+  recorder: [['GET', '/me/recorder', true], ['GET', '/files/']], // files: own only (checked in registrations.js)
 };
 const hidesMoney = (req) => req.user.role === 'set_director';
 app.use('/api', (req, res, next) => {
@@ -108,6 +112,7 @@ app.use('/api', (req, res, next) => {
 app.use('/api', businessRoutes);
 app.use('/api', recorderSyncRoutes);
 app.use('/api', payoutSyncRoutes);
+app.use('/api', registrationRoutes);
 app.get('/api/auth/me', wrap((req) => req.user));
 
 app.post('/api/auth/password', wrap(async (req) => {
@@ -178,7 +183,10 @@ async function recorderForEmail(email) {
 app.get('/api/me/recorder', wrap(async (req) => {
   const rid = await recorderForEmail(req.user.email);
   const [profile, sessions, periods] = await Promise.all([
-    one(`SELECT id, name, email, contact, payment_method, payout_account_no, contract, contract_url, contract_hard_copy, id_document, id_document_url FROM recorders WHERE id = $1`, [rid]),
+    one(`SELECT id, name, email, contact, payment_method, payout_account_no, contract, contract_url, contract_hard_copy, contract_status, id_document, id_document_url,
+      (SELECT COALESCE(json_agg(json_build_object('id', f.id, 'kind', f.kind, 'filename', f.filename) ORDER BY f.kind, f.id), '[]')
+         FROM recorder_files f WHERE f.recorder_id = recorders.id) AS files
+      FROM recorders WHERE id = $1`, [rid]),
     q(`${SESSION_SELECT} WHERE s.recorder_id = $1 ORDER BY s.date DESC`, [rid]),
     q(`SELECT p.id, p.name, p.start_date, p.end_date, p.status,
               COALESCE(SUM(s.hours),0) AS hours, COALESCE(SUM(${PHP}),0) AS php,
@@ -214,7 +222,9 @@ app.get('/api/recorders', wrap((req) => {
   return q(`
   SELECT r.*, COUNT(s.id)::int AS sessions, COALESCE(SUM(s.hours),0) AS hours,
          COALESCE(SUM(${PHP}),0) AS php, MAX(s.date) AS last_date,
-         (SELECT string_agg(alias, ' · ') FROM recorder_aliases a WHERE a.recorder_id = r.id) AS aliases
+         (SELECT string_agg(alias, ' · ') FROM recorder_aliases a WHERE a.recorder_id = r.id) AS aliases,
+         (SELECT COUNT(*)::int FROM recorder_files f WHERE f.recorder_id = r.id AND f.kind = 'id') AS id_files,
+         (SELECT COUNT(*)::int FROM recorder_files f WHERE f.recorder_id = r.id AND f.kind = 'esign') AS esign_files
   FROM recorders r LEFT JOIN sessions s ON s.recorder_id = r.id
   GROUP BY r.id ORDER BY r.name`);
 }));
@@ -229,9 +239,10 @@ app.put('/api/recorders/:id', wrap(async (req) => {
   for (const k of ['id_document_url', 'contract_url']) {
     if (req.body[k] && !driveUrl(req.body[k])) throw fail('Document links must be Google Drive or Google Docs links (https://drive.google.com/…)');
   }
+  if ('contract_status' in req.body && !['Done', 'Pending'].includes(req.body.contract_status)) throw fail('Contract must be Done or Pending');
   await updateFields('recorders', req.params.id, req.body,
     ['name', 'app_account', 'payout_account_no', 'payout_account_name', 'payment_method', 'contact', 'email', 'address',
-      'id_document', 'id_document_url', 'contract', 'contract_url', 'contract_hard_copy', 'active', 'notes']);
+      'id_document', 'id_document_url', 'contract', 'contract_url', 'contract_hard_copy', 'contract_status', 'active', 'notes']);
   return one('SELECT * FROM recorders WHERE id = $1', [Number(req.params.id)]);
 }));
 

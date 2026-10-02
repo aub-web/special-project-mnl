@@ -198,6 +198,52 @@ dialog::backdrop { background: rgba(10, 8, 5, .45); }
 
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 
+/* ---------- Public registration form ---------- */
+body.register-page { display: block; }
+.reg-wrap { max-width: 640px; margin: 0 auto; padding: 24px 16px calc(48px + env(safe-area-inset-bottom)); }
+.reg-brand { justify-content: space-between; padding: 0 2px 16px; }
+.reg-brand .name { display: flex; align-items: center; gap: 9px; }
+.reg-card { display: grid; gap: 16px; padding: 24px; border-top: 4px solid var(--brand); }
+.reg-card h1 { font-size: 22px; }
+.reg-card > p { margin: -8px 0 0; }
+.reg-card fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 14px 16px; margin: 0; display: grid; gap: 12px; }
+.reg-card legend { font-weight: 600; padding: 0 6px; display: flex; gap: 8px; align-items: center; }
+.reg-card .hint { font-size: 12px; color: var(--muted); margin: 0; }
+.reg-card textarea { resize: vertical; }
+.reg-methods { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.reg-method { position: relative; }
+.reg-method input { position: absolute; opacity: 0; inset: 0; }
+.reg-method span { display: block; text-align: center; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-weight: 500; cursor: pointer; }
+.reg-method input:checked + span { border-color: var(--brand); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.reg-method input:focus-visible + span { outline: 3px solid var(--brand); outline-offset: 2px; }
+.reg-count { font-size: 12px; font-weight: 500; padding: 1px 8px; border-radius: 999px; }
+.reg-count.ok { background: var(--ok-soft); color: var(--ok); }
+.reg-count.warn { background: var(--warn-soft); color: var(--warn); }
+.reg-files { display: grid; gap: 8px; }
+.reg-files:empty { display: none; }
+.reg-file { display: grid; grid-template-columns: 52px 1fr auto; gap: 10px; align-items: center; padding: 6px; border: 1px solid var(--line); border-radius: 8px; }
+.reg-file img, .reg-file-icon { width: 52px; height: 52px; object-fit: cover; border-radius: 6px; background: var(--hover); display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--muted); }
+.reg-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.reg-file-name small { display: block; color: var(--muted); }
+.reg-add { justify-self: start; }
+.reg-hp { position: absolute; left: -9999px; width: 1px; height: 1px; }
+.reg-consent { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; }
+.reg-consent input { margin-top: 3px; width: 18px; height: 18px; flex: none; accent-color: var(--brand); }
+.reg-submit { justify-content: center; padding: 12px; font-size: 15px; }
+.reg-done { text-align: center; justify-items: center; }
+.reg-check { width: 56px; height: 56px; border-radius: 50%; background: var(--ok-soft); color: var(--ok); display: grid; place-items: center; font-size: 28px; font-weight: 700; }
+.msg { margin: 0; font-size: 13px; padding: 10px 12px; border-radius: 8px; }
+.msg.err { color: var(--danger); background: var(--warn-soft); }
+
+/* Admin: registration review & file gallery */
+.reg-queue { border-left: 3px solid var(--brand); margin-bottom: 14px; }
+.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.file-tile { display: grid; gap: 4px; text-decoration: none; color: var(--ink); font-size: 12px; }
+.file-tile img, .file-tile .reg-file-icon { width: 100%; height: 110px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+.file-tile .reg-file-icon { width: 100%; }
+.file-tile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+button.pill { cursor: pointer; font: inherit; font-size: 12px; }
+
 /* ---------- Phone ---------- */
 @media (max-width: 760px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }

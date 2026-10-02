@@ -148,7 +148,7 @@ function toast(msg, isErr = false) {
 }
 
 /** Open a modal form. fields: [{name,label,type,value,options,full,required}] → resolves with values or null. */
-function modal({ title, fields, submit = 'Save', extra = '' }) {
+function modal({ title, fields, submit = 'Save', extra = '', onOpen }) {
   const dlg = $('#modal'), form = $('#modal-form');
   const input = (f) => {
     const common = `name="${f.name}" ${f.required ? 'required' : ''} ${f.step ? `step="${f.step}"` : ''} ${f.list ? `list="${f.list}"` : ''}`;
@@ -170,6 +170,7 @@ function modal({ title, fields, submit = 'Save', extra = '' }) {
     <div class="actions"><button value="cancel" formnovalidate>Cancel</button><button value="ok" class="primary">${esc(submit)}</button></div>`;
   dlg.showModal();
   form.querySelector('input,select,textarea')?.focus();
+  onOpen?.(form);
   return new Promise((resolve) => {
     dlg.onclose = () => {
       if (dlg.returnValue !== 'ok') return resolve(null);
@@ -229,6 +230,9 @@ async function refreshBadge() {
     const p = (await api('/users/pending-count').catch(() => ({ n: 0 }))).n;
     const ub = $('#users-badge');
     ub.hidden = !p; ub.textContent = p;
+    const n = (await api('/registrations/pending-count').catch(() => ({ n: 0 }))).n;
+    const rb = $('#rec-badge');
+    rb.hidden = !n; rb.textContent = n;
   }
 }
 window.addEventListener('hashchange', render);
@@ -592,6 +596,17 @@ async function period(id = '') {
 }
 
 // ---------- Recorders ----------
+/** Contract tag: Done / Pending. Admins click it to switch; the signed copy (if linked) opens next to it. */
+function contractTag(r, admin) {
+  const done = r.contract_status === 'Done';
+  const url = driveLink(r.contract_url) || driveLink(r.contract);
+  const tag = admin
+    ? `<button class="pill ${done ? 'ok' : 'warn'}" data-contract="${r.id}" title="Click to mark ${done ? 'Pending' : 'Done'}">${done ? '✓ Done' : 'Pending'}</button>`
+    : `<span class="pill ${done ? 'ok' : 'warn'}">${done ? 'Done' : 'Pending'}</span>`;
+  const hard = (r.contract_hard_copy || '').toLowerCase();
+  return `${tag}${url ? ` <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">open</a>` : ''}${hard ? ` <span class="pill ${hard === 'done' ? 'ok' : 'warn'}" style="font-size:11px">hard copy: ${esc(r.contract_hard_copy)}</span>` : ''}`;
+}
+
 /** Only Google Drive/Docs links are rendered as links. */
 const driveLink = (u) => (/^https:\/\/(drive|docs)\.google\.com\//.test(u || '') ? u : null);
 
@@ -611,17 +626,43 @@ function contractPill(r) {
   return `<span class="pill ok" title="${esc(r.contract || 'Signed contract')}">Signed</span>${link}${hard ? ` <span class="pill ${hard === 'done' ? 'ok' : 'warn'}">hard copy: ${esc(r.contract_hard_copy)}</span>` : ''}`;
 }
 
+/** Thumbnails for uploaded files (images inline; PDF/HEIC as a tile you can open). */
+function fileTiles(files) {
+  return `<div class="file-grid">${files.map((f) => {
+    const url = '/api/files/' + f.id;
+    const thumb = /^image\/(jpeg|png|webp)$/.test(f.mime || 'image/jpeg') && !/\.heic$/i.test(f.filename)
+      ? `<img src="${url}" alt="" loading="lazy">` : `<span class="reg-file-icon">${/pdf/.test(f.mime || f.filename) ? 'PDF' : 'FILE'}</span>`;
+    return `<a class="file-tile" href="${url}" target="_blank" rel="noopener">${thumb}<span>${esc(f.filename)}</span></a>`;
+  }).join('')}</div>`;
+}
+function filesSection(files) {
+  const ids = files.filter((f) => f.kind === 'id'), sig = files.filter((f) => f.kind === 'esign');
+  return `<h2 style="margin:4px 0 0">Valid ID (${ids.length})</h2>${ids.length ? fileTiles(ids) : '<p class="muted" style="margin:0">None</p>'}
+    <h2 style="margin:4px 0 0">E-signature (${sig.length})</h2>${sig.length ? fileTiles(sig) : '<p class="muted" style="margin:0">None</p>'}`;
+}
+const regLink = (key) => `${location.origin}/register?k=${key}`;
+
 async function recorders() {
-  const [{ recorders: list }, s] = await Promise.all([lookups(true), api('/settings')]);
   const admin = me.role === 'admin';
-  const noContract = list.filter((r) => !r.contract && !r.contract_url).length;
-  const noId = list.filter((r) => !r.id_document_url).length;
+  const [{ recorders: list }, s, regs] = await Promise.all([lookups(true), api('/settings'), admin ? api('/registrations') : []]);
+  const noContract = list.filter((r) => r.contract_status !== 'Done').length;
+  const noId = list.filter((r) => !r.id_document_url && !r.id_files).length;
   view.innerHTML = `
     <div class="head"><div><h1>Recorders</h1><p>${list.length} people · ${s.recorder_synced_at ? `profiles synced from Google Sheet ${new Date(s.recorder_synced_at).toLocaleString()}` : 'profiles not synced yet'}</p></div>
-      <div class="head-actions">${admin ? '<button id="rc-sync">⟳ Sync from Google Sheet</button>' : ''}<button class="primary" id="rc-new">+ Add recorder</button></div></div>
+      <div class="head-actions">${admin ? '<button id="rc-link">🔗 Registration link</button><button id="rc-sync">⟳ Sync from Google Sheet</button>' : ''}<button class="primary" id="rc-new">+ Add recorder</button></div></div>
+    ${regs.length ? `<div class="card reg-queue"><div class="section-head" style="margin-top:0"><h2>New registrations <span class="badge">${regs.length}</span></h2>
+      <span class="muted">Submitted through the registration link — review before they're added</span></div>
+      <div style="overflow:auto"><table><thead><tr><th>Name</th><th>Contact</th><th>Payment</th><th>Files</th><th>Submitted</th><th></th></tr></thead><tbody>
+      ${regs.map((g) => `<tr><td><b>${esc(g.name)}</b><div class="muted" style="font-size:12px">${esc(g.email)}</div>
+          ${g.matches.length ? `<div style="font-size:12px;color:var(--warn)">matches existing: ${g.matches.map((m) => esc(m.name)).join(', ')}</div>` : '<div style="font-size:12px" class="muted">new recorder</div>'}</td>
+        <td>${esc(g.contact)}</td><td><span class="pill">${esc(g.payment_method === 'Bank' ? 'Bank – ' + g.bank_name : g.payment_method)}</span> ${maskAcct(g.account_no)}</td>
+        <td>🪪 ${g.files.filter((f) => f.kind === 'id').length} · ✍️ ${g.files.filter((f) => f.kind === 'esign').length}</td>
+        <td>${new Date(g.created_at).toLocaleString()}</td>
+        <td class="num"><button class="primary" data-review="${g.id}">Review</button> <button class="ghost danger" data-reject="${g.id}">Reject</button></td></tr>`).join('')}
+      </tbody></table></div></div>` : ''}
     <div class="toolbar">
       <label class="f" style="flex:1;min-width:180px">Search<input id="rc-q" placeholder="Name, email, contact, account…"></label>
-      <label class="f">Show<select id="rc-f"><option value="">All recorders</option><option value="noid">No ID on file (${noId})</option><option value="nocontract">No signed contract (${noContract})</option>
+      <label class="f">Show<select id="rc-f"><option value="">All recorders</option><option value="noid">No ID on file (${noId})</option><option value="nocontract">Contract pending (${noContract})</option>
         <option value="nohard">Hard copy not yet</option><option value="inactive">Inactive</option></select></label>
     </div>
     <div class="table-wrap"><table><thead><tr><th>Name</th><th>Contact</th><th>Payment</th><th>ID</th><th>Contract</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
@@ -629,8 +670,8 @@ async function recorders() {
   const draw = () => {
     const ql = $('#rc-q').value.toLowerCase(), f = $('#rc-f').value;
     const rows = list.filter((r) => {
-      if (f === 'nocontract' && (r.contract || r.contract_url)) return false;
-      if (f === 'noid' && r.id_document_url) return false;
+      if (f === 'nocontract' && r.contract_status === 'Done') return false;
+      if (f === 'noid' && (r.id_document_url || r.id_files)) return false;
       if (f === 'nohard' && !/not/i.test(r.contract_hard_copy || '')) return false;
       if (f === 'inactive' && r.active) return false;
       return !ql || [r.name, r.aliases, r.email, r.contact, r.payout_account_no, r.address].join(' ').toLowerCase().includes(ql);
@@ -640,8 +681,9 @@ async function recorders() {
         ${r.email ? `<div class="muted" style="font-size:12px">${esc(r.email)}</div>` : ''}${r.aliases ? `<div class="muted" style="font-size:11px">aka ${esc(r.aliases)}</div>` : ''}</td>
       <td>${r.contact ? `<a href="tel:${esc(r.contact)}">${esc(r.contact)}</a>` : '<span class="muted">—</span>'}</td>
       <td>${r.payment_method ? `<span class="pill">${esc(r.payment_method)}</span> ` : ''}${maskAcct(r.payout_account_no)}</td>
-      <td>${idLink(r)}</td>
-      <td>${contractPill(r)}</td>
+      <td>${r.id_files || r.esign_files ? `<button class="btn ghost id-btn" data-files="${r.id}">🪪 ${r.id_files} · ✍️ ${r.esign_files}</button>` : ''}
+        ${r.id_document_url || !(r.id_files || r.esign_files) ? idLink(r) : ''}</td>
+      <td>${contractTag(r, admin)}</td>
       <td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td><td>${fmtDate(r.last_date)}</td>
       <td class="num"><a class="btn ghost" href="#/sessions/${r.id}">Sessions</a><button class="ghost" data-edit="${r.id}">Edit</button><button class="ghost" data-merge="${r.id}">Merge…</button></td></tr>`).join('')
       || '<tr><td colspan="9" class="empty">No recorders match.</td></tr>';
@@ -660,7 +702,68 @@ async function recorders() {
       render();
     } catch (err) { toast(err.message, true); e.target.disabled = false; e.target.textContent = '⟳ Sync from Google Sheet'; }
   };
+  if (admin) $('#rc-link').onclick = async () => {
+    const { key } = await api('/registrations/link');
+    const v = await modal({ title: 'Recorder registration link', submit: 'Done', fields: [],
+      extra: `<p class="muted" style="margin:0">Send this link to new recorders. They fill in their details, payment account, ID and e-signature;
+        you review each one here before it's added.</p>
+        <input id="rl-url" readonly value="${esc(regLink(key))}" style="width:100%">
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="primary" id="rl-copy">Copy link</button>
+          <a class="btn" href="${esc(regLink(key))}" target="_blank" rel="noopener">Open form</a>
+          <button type="button" class="ghost danger" id="rl-new">Make a new link (old one stops working)</button></div>` ,
+      onOpen: () => {
+        $('#rl-copy').onclick = async () => { await navigator.clipboard.writeText($('#rl-url').value).catch(() => {}); $('#rl-url').select(); toast('Link copied'); };
+        $('#rl-new').onclick = async () => {
+          if (!confirm('Make a new link? Anyone with the old link won\'t be able to register anymore.')) return;
+          const r = await api('/registrations/link/regenerate', { method: 'POST' });
+          $('#rl-url').value = regLink(r.key); toast('New link ready — share this one');
+        };
+      } });
+    void v;
+  };
+  view.addEventListener('click', async (e) => {
+    const reviewId = e.target.dataset.review, rejectId = e.target.dataset.reject;
+    if (!reviewId && !rejectId) return;
+    const g = regs.find((x) => String(x.id) === (reviewId || rejectId));
+    try {
+      if (rejectId) {
+        if (!confirm(`Reject the registration from ${g.name}? Their uploaded ID and signature files will be deleted.`)) return;
+        await api(`/registrations/${g.id}/reject`, { method: 'POST' });
+        toast('Registration rejected'); return render();
+      }
+      const method = g.payment_method === 'Bank' ? `Bank – ${g.bank_name}` : g.payment_method;
+      const v = await modal({ title: `Review · ${g.name}`, submit: 'Approve',
+        extra: `<dl class="profile">
+            <dt>Name</dt><dd>${esc(g.name)}</dd><dt>Email</dt><dd>${esc(g.email)}</dd><dt>Contact</dt><dd>${esc(g.contact)}</dd>
+            <dt>Address</dt><dd>${esc(g.address)}</dd><dt>Payment</dt><dd>${esc(method)} · <b>${esc(g.account_no)}</b></dd>
+            <dt>Submitted</dt><dd>${new Date(g.created_at).toLocaleString()}</dd></dl>
+          ${filesSection(g.files)}
+          ${g.matches.length ? `<p style="margin:0;color:var(--warn);font-size:13px">This looks like an existing recorder. Approving into them <b>replaces</b> their email, contact, address and payout account with the details above — check the account number carefully.</p>` : ''}
+          <p class="muted" style="margin:0;font-size:12px">Contract starts as <b>Pending</b> — mark it Done on the Recorders list once signed.</p>`,
+        fields: [{ name: 'recorder_id', label: 'Save as', type: 'select', full: true,
+          options: [...g.matches.map((m) => [m.id, `Update existing: ${m.name}${m.email ? ` (${m.email})` : ''}`]), ['', 'New recorder']],
+          value: g.matches[0]?.id ?? '' }] });
+      if (!v) return;
+      await api(`/registrations/${g.id}/approve`, { method: 'POST', body: { recorder_id: v.recorder_id || null } });
+      toast(`${g.name} approved`); render();
+    } catch (err) { toast(err.message, true); }
+  });
   $('#rc-body').addEventListener('click', async (e) => {
+    const cid = e.target.closest('[data-contract]')?.dataset.contract;
+    if (cid) {
+      const r = list.find((x) => String(x.id) === cid);
+      const next = r.contract_status === 'Done' ? 'Pending' : 'Done';
+      try { await api('/recorders/' + cid, { method: 'PUT', body: { contract_status: next } }); r.contract_status = next; draw(); toast(`${r.name}: contract ${next}`); }
+      catch (err) { toast(err.message, true); }
+      return;
+    }
+    const fid = e.target.closest('[data-files]')?.dataset.files;
+    if (fid) {
+      const r = list.find((x) => String(x.id) === fid);
+      const files = await api(`/recorders/${fid}/files`);
+      await modal({ title: `${r.name} · uploaded files`, submit: 'Close', fields: [], extra: filesSection(files) });
+      return;
+    }
     const id = e.target.dataset.edit || e.target.dataset.merge;
     if (!id) return;
     const r = list.find((x) => String(x.id) === id);
@@ -972,9 +1075,9 @@ async function myHours() {
         <dt>Email</dt><dd>${esc(p.email || '—')}</dd>
         <dt>Contact</dt><dd>${esc(p.contact || '—')}</dd>
         <dt>Payment</dt><dd>${esc(p.payment_method || '—')} ${maskAcct(p.payout_account_no)}</dd>
-        <dt>ID</dt><dd>${idLink(p)}</dd>
-        <dt>Contract</dt><dd>${contractPill(p)}</dd>
-      </dl><p class="muted" style="font-size:12px;margin:12px 0 0">Something wrong? Tell the studio admin so they can update it.</p></div>
+        ${p.files?.length ? '' : `<dt>ID</dt><dd>${idLink(p)}</dd>`}
+        <dt>Contract</dt><dd>${contractTag(p, false)}</dd>
+      </dl>${p.files?.length ? `<div class="grid" style="margin-top:10px;gap:8px">${filesSection(p.files)}</div>` : ''}<p class="muted" style="font-size:12px;margin:12px 0 0">Something wrong? Tell the studio admin so they can update it.</p></div>
     </div>
     <div class="section-head" style="margin-top:14px"><h2>My sessions</h2><span class="muted" id="me-range-label"></span></div>
     <div class="table-wrap" id="me-sessions"></div>`;
