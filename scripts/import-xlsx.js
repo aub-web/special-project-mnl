@@ -33,7 +33,7 @@ if (args.includes('--reset')) {
 }
 
 const YEAR = 2026;
-const { rate_usd: RATE, fx_rate: FX } = await getSettings();
+const { rate_php: RATE } = await getSettings();
 
 // Spelling variants that the automatic matcher (which ignores middle initials) can't catch.
 const ALIASES = {
@@ -101,9 +101,9 @@ await tx(async (c) => {
     if (!(hours > 0)) return 0;
     const rid = await recorder(who);
     if (!rid) return 0;
-    await q(`INSERT INTO sessions (recorder_id, location_id, date, hours, category, shift, rate_usd, fx_rate, notes, source)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [rid, await location(where), date, hours, category, shift, RATE, FX, notes || null, source], c);
+    await q(`INSERT INTO sessions (recorder_id, location_id, date, hours, category, shift, rate_php, notes, source)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [rid, await location(where), date, hours, category, shift, RATE, notes || null, source], c);
     return 1;
   };
 

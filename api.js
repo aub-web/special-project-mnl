@@ -17,10 +17,9 @@ app.use('/api', async (req, res, next) => {
   try { await migrate(); next(); } catch (e) { next(e); }
 });
 
-// Amounts are always derived from hours × rate × fx stored on each session,
+// Amounts are always derived from hours × the ₱ rate stored on each session,
 // so changing the default rate in Settings never rewrites past pay.
-const USD = 'ROUND((s.hours * s.rate_usd)::numeric, 2)::float8';
-const PHP = 'ROUND((s.hours * s.rate_usd * s.fx_rate)::numeric, 2)::float8';
+const PHP = 'ROUND((s.hours * s.rate_php)::numeric, 2)::float8';
 
 const wrap = (fn) => async (req, res) => {
   try {
@@ -285,12 +284,12 @@ app.post('/api/locations/:id/merge', wrap(async (req) => {
 
 // ---------- Sessions ----------
 const SESSION_SELECT = `
-  SELECT s.*, r.name AS recorder, l.name AS location, ${USD} AS usd, ${PHP} AS php
+  SELECT s.*, r.name AS recorder, l.name AS location, ${PHP} AS php
   FROM sessions s JOIN recorders r ON r.id = s.recorder_id LEFT JOIN locations l ON l.id = s.location_id`;
 
 /** Remove every money field from session rows (set directors). */
 function stripMoney(rows) {
-  for (const s of [].concat(rows)) { delete s.usd; delete s.php; delete s.rate_usd; delete s.fx_rate; }
+  for (const s of [].concat(rows)) { delete s.php; delete s.rate_php; delete s.rate_usd; delete s.fx_rate; }
   return rows;
 }
 
@@ -319,12 +318,12 @@ async function sessionValues(b, defaults, db) {
     recorderId,
     b.location_id ? Number(b.location_id) : await resolveLocation(b.location, db),
     b.date, hours, b.category || 'Studio', toNull(b.shift),
-    Number(b.rate_usd ?? defaults.rate_usd), Number(b.fx_rate ?? defaults.fx_rate),
+    Number(b.rate_php ?? defaults.rate_php),
     toNull(b.notes),
   ];
 }
-const INSERT_SESSION = `INSERT INTO sessions (recorder_id, location_id, date, hours, category, shift, rate_usd, fx_rate, notes, source, created_by)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'web',$10) RETURNING id`;
+const INSERT_SESSION = `INSERT INTO sessions (recorder_id, location_id, date, hours, category, shift, rate_php, notes, source, created_by)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'web',$9) RETURNING id`;
 
 app.post('/api/sessions', wrap(async (req) => {
   const v = await sessionValues(req.body, await getSettings());
@@ -347,9 +346,9 @@ app.post('/api/sessions/bulk', wrap(async (req) => {
 app.put('/api/sessions/:id', wrap(async (req) => {
   const cur = await editableSession(req);
   const body = { ...req.body };
-  if (req.user.role !== 'admin') { delete body.rate_usd; delete body.fx_rate; } // only admins change pay rates
+  if (req.user.role !== 'admin') delete body.rate_php; // only admins change pay rates
   const v = await sessionValues({ ...cur, ...body }, cur);
-  await q(`UPDATE sessions SET recorder_id=$1, location_id=$2, date=$3, hours=$4, category=$5, shift=$6, rate_usd=$7, fx_rate=$8, notes=$9 WHERE id=$10`,
+  await q(`UPDATE sessions SET recorder_id=$1, location_id=$2, date=$3, hours=$4, category=$5, shift=$6, rate_php=$7, notes=$8 WHERE id=$9`,
     [...v, cur.id]);
   const row = await one(`${SESSION_SELECT} WHERE s.id = $1`, [cur.id]);
   return hidesMoney(req) ? stripMoney(row) : row;
@@ -367,7 +366,7 @@ async function buildSummary({ from, to, category, location_id, period_id }) {
   const p = params();
   const where = sessionFilters({ from, to, category, location_id }, p);
   const rows = await q(`
-    SELECT s.recorder_id, r.name, r.payout_account_no, r.id_document, r.id_document_url, s.date, SUM(s.hours) AS hours, SUM(${USD}) AS usd, SUM(${PHP}) AS php,
+    SELECT s.recorder_id, r.name, r.payout_account_no, r.id_document, r.id_document_url, s.date, SUM(s.hours) AS hours, SUM(${PHP}) AS php,
            string_agg(DISTINCT l.name, ',') AS locations
     FROM sessions s JOIN recorders r ON r.id = s.recorder_id LEFT JOIN locations l ON l.id = s.location_id
     ${where} GROUP BY s.recorder_id, r.name, r.payout_account_no, r.id_document, r.id_document_url, s.date ORDER BY r.name`, p.list);
@@ -380,18 +379,17 @@ async function buildSummary({ from, to, category, location_id, period_id }) {
   for (const r of rows) {
     if (!byRec.has(r.recorder_id)) {
       byRec.set(r.recorder_id, { recorder_id: r.recorder_id, name: r.name, payout_account_no: r.payout_account_no, id_document: r.id_document, id_document_url: r.id_document_url,
-        by_date: {}, hours: 0, usd: 0, php: 0, locations: new Set(), payment: payments[r.recorder_id] || null });
+        by_date: {}, hours: 0, php: 0, locations: new Set(), payment: payments[r.recorder_id] || null });
     }
     const o = byRec.get(r.recorder_id);
     o.by_date[r.date] = r.hours;
-    o.hours += r.hours; o.usd += r.usd; o.php += r.php;
+    o.hours += r.hours; o.php += r.php;
     (r.locations || '').split(',').filter(Boolean).forEach((l) => o.locations.add(l));
   }
   const list = [...byRec.values()].map((o) => ({ ...o, locations: [...o.locations] }));
   const totals = {
     by_date: Object.fromEntries(dates.map((d) => [d, rows.filter((r) => r.date === d).reduce((a, r) => a + r.hours, 0)])),
     hours: list.reduce((a, r) => a + r.hours, 0),
-    usd: list.reduce((a, r) => a + r.usd, 0),
     php: list.reduce((a, r) => a + r.php, 0),
     paid_php: list.reduce((a, r) => a + (r.payment?.status === 'Paid' ? r.payment.amount_php : 0), 0),
   };
@@ -402,11 +400,11 @@ app.get('/api/summary', wrap((req) => buildSummary(req.query)));
 app.get('/api/summary.csv', wrap(async (req, res) => {
   const s = await buildSummary(req.query);
   const esc = (v) => (/[",\n]/.test(String(v ?? '')) ? `"${String(v).replace(/"/g, '""')}"` : (v ?? ''));
-  const lines = [['Name of Recorder', ...s.dates, 'Total in Hours', 'USD Earned', 'PH Earned', 'Locations', 'Payout Account'].map(esc).join(',')];
+  const lines = [['Name of Recorder', ...s.dates, 'Total in Hours', 'Rate', 'PH Earned', 'Locations', 'Payout Account'].map(esc).join(',')];
   for (const r of s.rows) {
-    lines.push([r.name, ...s.dates.map((d) => r.by_date[d] || 0), r.hours, r.usd.toFixed(2), r.php.toFixed(2), r.locations.join(' / '), r.payout_account_no].map(esc).join(','));
+    lines.push([r.name, ...s.dates.map((d) => r.by_date[d] || 0), r.hours, r.hours ? (r.php / r.hours).toFixed(2) : '', r.php.toFixed(2), r.locations.join(' / '), r.payout_account_no].map(esc).join(','));
   }
-  lines.push(['Total', ...s.dates.map((d) => s.totals.by_date[d]), s.totals.hours, s.totals.usd.toFixed(2), s.totals.php.toFixed(2)].map(esc).join(','));
+  lines.push(['Total', ...s.dates.map((d) => s.totals.by_date[d]), s.totals.hours, '', s.totals.php.toFixed(2)].map(esc).join(','));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="summary_${s.from}_to_${s.to}.csv"`);
   res.send('﻿' + lines.join('\r\n'));
@@ -474,7 +472,7 @@ app.delete('/api/followups/:id', wrap(async (req) => {
 // ---------- Dashboard ----------
 app.get('/api/dashboard', wrap(async () => {
   const [totals, byWeek, byCategory, byLocation, topRecorders, fu, pr, bizTotals] = await Promise.all([
-    one(`SELECT COUNT(*)::int sessions, COALESCE(SUM(hours),0) hours, COALESCE(SUM(${USD}),0) usd, COALESCE(SUM(${PHP}),0) php,
+    one(`SELECT COUNT(*)::int sessions, COALESCE(SUM(hours),0) hours, COALESCE(SUM(${PHP}),0) php,
       COUNT(DISTINCT recorder_id)::int recorders, COUNT(DISTINCT location_id)::int locations, MIN(date) first_date, MAX(date) last_date FROM sessions s`),
     q(`SELECT to_char(date_trunc('week', s.date::date), 'YYYY-MM-DD') AS week,
          SUM(hours) hours, SUM(${PHP}) php, COUNT(DISTINCT recorder_id)::int recorders

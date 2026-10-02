@@ -105,7 +105,7 @@ That also means anyone holding the link can see the bank details in it.
 | Settings | — | Default USD rate and PHP exchange rate; change your password |
 | Users | — | Admins add, disable or reset logins |
 
-Money is always computed as `hours × rate_usd × fx_rate`. Both rates are stored on each session,
+Money is always computed as `hours × rate_php` (₱ per hour, ₱150 by default). The rate is stored on each session,
 so changing the default rate never rewrites past pay.
 
 ## Structure

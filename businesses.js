@@ -28,7 +28,7 @@ const bizKey = (s) => clean(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 const words = (s) => new Set(clean(s).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length >= 2));
 
 const PAYOUT = '(b.shifts * b.scenes * b.rate_php)';
-const RECORDER_PHP = 'ROUND((s.hours * s.rate_usd * s.fx_rate)::numeric, 2)::float8';
+const RECORDER_PHP = 'ROUND((s.hours * s.rate_php)::numeric, 2)::float8';
 
 // ---------- Google Sheet sync ----------
 

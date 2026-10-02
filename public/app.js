@@ -5,7 +5,6 @@ const $ = (sel, el = document) => el.querySelector(sel);
 let view = $('#view');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const php = (n) => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const hrs = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const today = () => new Date().toLocaleDateString('en-CA');
 const fmtDate = (iso, opts = { month: 'short', day: 'numeric' }) =>
@@ -269,7 +268,7 @@ async function dashboard() {
       ${canSee('log') ? '<a class="btn primary" href="#/log">+ Log hours</a>' : ''}</div>
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(t.hours)}</div><div class="sub">${t.sessions} sessions</div></div>
-      <div class="card kpi"><div class="label">Recorder payout</div><div class="value">${php(t.php)}</div><div class="sub">${usd(t.usd)}</div></div>
+      <div class="card kpi"><div class="label">Recorder payout</div><div class="value">${php(t.php)}</div></div>
       <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(bt.payout)}</div><div class="sub">${hrs(bt.shifts)} shifts · ${bt.businesses} businesses</div></div>
       <div class="card kpi"><div class="label">Recorders</div><div class="value">${t.recorders}</div><div class="sub">across ${t.locations} locations</div></div>
       ${isAdmin() ? `<div class="card kpi"><div class="label">Needs attention</div><div class="value">${d.openFollowups}</div>
@@ -303,7 +302,7 @@ async function log() {
   const { settings: s } = await lookups();
   const state = { rows: Array.from({ length: 6 }, () => ({ recorder: '', hours: '', notes: '' })) };
   view.innerHTML = `
-    <div class="head"><div><h1>Log hours</h1><p>One day at one location — like a daily sheet.${showMoney() ? ` Rate ${usd(s.rate_usd)}/h · ₱${s.fx_rate}/$` : ''}</p></div></div>
+    <div class="head"><div><h1>Log hours</h1><p>One day at one location — like a daily sheet.${showMoney() ? ` Rate ${php(s.rate_php)} per hour.` : ''}</p></div></div>
     <div class="card">
       <div class="toolbar">
         <label class="f">Date<input type="date" id="lg-date" value="${today()}"></label>
@@ -327,7 +326,7 @@ async function log() {
   const totals = () => {
     const h = state.rows.reduce((a, r) => a + (Number(r.hours) || 0), 0);
     $('#lg-h').textContent = hrs(h) + ' h';
-    if (showMoney()) $('#lg-p').textContent = php(h * s.rate_usd * s.fx_rate);
+    if (showMoney()) $('#lg-p').textContent = php(h * s.rate_php);
   };
   rowsEl.addEventListener('input', (e) => {
     const i = e.target.closest('.log-row')?.dataset.i;
@@ -376,17 +375,17 @@ async function sessions(recorderId = '') {
     data = await api('/sessions?' + qs(f));
     const money = showMoney();
     const H = data.reduce((a, s) => a + s.hours, 0);
-    const U = money ? data.reduce((a, s) => a + s.usd, 0) : 0, P = money ? data.reduce((a, s) => a + s.php, 0) : 0;
+    const P = money ? data.reduce((a, s) => a + s.php, 0) : 0;
     const editable = (s) => isAdmin() || s.created_by === me.id;
     $('#ss-sum').textContent = `${data.length} sessions · ${hrs(H)} h${money ? ` · ${php(P)}` : ''}`;
-    $('#ss-table').innerHTML = data.length ? `<table><thead><tr><th>Date</th><th>Recorder</th><th>Location</th><th>Category</th><th class="num">Hours</th>${money ? '<th class="num">USD</th><th class="num">PHP</th>' : ''}<th>Notes</th><th></th></tr></thead><tbody>
+    $('#ss-table').innerHTML = data.length ? `<table><thead><tr><th>Date</th><th>Recorder</th><th>Location</th><th>Category</th><th class="num">Hours</th>${money ? '<th class="num">Rate</th><th class="num">PHP</th>' : ''}<th>Notes</th><th></th></tr></thead><tbody>
       ${data.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td>${esc(s.recorder)}</td><td>${esc(s.location || '—')}</td>
         <td><span class="pill ${s.category === 'Studio' ? 'accent' : s.category === 'OT' ? 'warn' : ''}">${esc(s.category)}</span>${s.shift ? ` <span class="muted" style="font-size:12px">${esc(s.shift)}</span>` : ''}</td>
-        <td class="num">${hrs(s.hours)}</td>${money ? `<td class="num">${usd(s.usd)}</td><td class="num">${php(s.php)}</td>` : ''}
+        <td class="num">${hrs(s.hours)}</td>${money ? `<td class="num">${php(s.rate_php)}/h</td><td class="num">${php(s.php)}</td>` : ''}
         <td class="muted">${esc(s.notes || '')}</td>
         <td class="num">${editable(s) ? `<button class="ghost" data-edit="${s.id}">Edit</button><button class="ghost danger" data-del="${s.id}">Delete</button>` : ''}</td></tr>`).join('')}
       </tbody><tfoot><tr><td>Total · ${data.length} session${data.length === 1 ? '' : 's'}</td><td></td><td></td><td></td>
-        <td class="num">${hrs(H)} h</td>${money ? `<td class="num">${usd(U)}</td><td class="num">${php(P)}</td>` : ''}<td></td><td></td></tr></tfoot></table>`
+        <td class="num">${hrs(H)} h</td>${money ? `<td></td><td class="num">${php(P)}</td>` : ''}<td></td><td></td></tr></tfoot></table>`
       : '<div class="empty">No sessions match these filters.</div>';
   };
   view.querySelector('.toolbar').addEventListener('input', (e) => {
@@ -410,8 +409,7 @@ async function sessions(recorderId = '') {
       { name: 'location', label: 'Location', value: s.location || '', list: 'dl-locations' },
       { name: 'category', label: 'Category', type: 'select', options: CATEGORIES, value: s.category },
       ...(isAdmin() ? [
-        { name: 'rate_usd', label: 'Rate (USD/h)', type: 'number', step: '0.01', value: s.rate_usd },
-        { name: 'fx_rate', label: 'PHP per USD', type: 'number', step: '0.01', value: s.fx_rate },
+        { name: 'rate_php', label: 'Rate (₱ per hour)', type: 'number', step: '0.01', value: s.rate_php },
       ] : []),
       { name: 'shift', label: 'Shift', value: s.shift || '', full: true },
       { name: 'notes', label: 'Notes', type: 'textarea', value: s.notes || '', full: true },
@@ -486,20 +484,20 @@ async function period(id = '') {
     $('#pd-kpis').innerHTML = `
       <div class="card kpi"><div class="label">Recorders</div><div class="value">${sum.rows.length}</div></div>
       <div class="card kpi"><div class="label">Hours</div><div class="value">${hrs(T.hours)}</div></div>
-      <div class="card kpi"><div class="label">Payout</div><div class="value">${php(T.php)}</div><div class="sub">${usd(T.usd)}</div></div>
+      <div class="card kpi"><div class="label">Payout</div><div class="value">${php(T.php)}</div></div>
       ${p ? `<div class="card kpi"><div class="label">Paid</div><div class="value">${paidCount}/${sum.rows.length}</div><div class="sub">${php(T.paid_php)} sent</div></div>` : ''}`;
     if (!sum.rows.length) { $('#pd-table').innerHTML = '<div class="empty">No sessions in this range.</div>'; return; }
     $('#pd-table').innerHTML = `<table><thead><tr><th class="sticky-col">Name of recorder</th>
       ${sum.dates.map((d) => `<th class="num">${fmtDate(d)}<br><span style="font-weight:400">${weekday(d)}</span></th>`).join('')}
-      <th class="num">Total h</th><th class="num">USD</th><th class="num">PH earned</th><th>ID</th>${p ? '<th>Payment</th>' : ''}</tr></thead><tbody>
+      <th class="num">Total h</th><th class="num">PH earned</th><th>ID</th>${p ? '<th>Payment</th>' : ''}</tr></thead><tbody>
       ${sum.rows.map((r) => `<tr><td class="sticky-col"><a href="#/sessions/${r.recorder_id}?${qs({ from: filt.from, to: filt.to })}">${esc(r.name)}</a>
           <div class="muted" style="font-size:11px">${esc(r.locations.join(' · '))}</div></td>
         ${sum.dates.map((d) => `<td class="num ${r.by_date[d] ? '' : 'zero'}">${r.by_date[d] ? hrs(r.by_date[d]) : '0'}</td>`).join('')}
-        <td class="num"><b>${hrs(r.hours)}</b></td><td class="num">${usd(r.usd)}</td><td class="num"><b>${php(r.php)}</b></td>
+        <td class="num"><b>${hrs(r.hours)}</b></td><td class="num"><b>${php(r.php)}</b></td>
         <td>${idLink(r, { compact: true })}</td>
         ${p ? `<td>${payCell(r)}</td>` : ''}</tr>`).join('')}
       </tbody><tfoot><tr><td class="sticky-col">Total</td>${sum.dates.map((d) => `<td class="num">${hrs(T.by_date[d])}</td>`).join('')}
-        <td class="num">${hrs(T.hours)}</td><td class="num">${usd(T.usd)}</td><td class="num">${php(T.php)}</td><td></td>${p ? '<td></td>' : ''}</tr></tfoot></table>`;
+        <td class="num">${hrs(T.hours)}</td><td class="num">${php(T.php)}</td><td></td>${p ? '<td></td>' : ''}</tr></tfoot></table>`;
   };
   const payCell = (r) => {
     const pm = r.payment;
@@ -847,9 +845,7 @@ async function settings() {
     <div class="grid" style="max-width:520px">
       ${admin ? `<form id="st-form" class="card grid">
         <h2>Rates & sources</h2>
-        <label class="f">Recording rate (USD per hour)<input name="rate_usd" type="number" step="0.01" value="${s.rate_usd}"></label>
-        <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}"></label>
-        <p class="muted" style="margin:0">= <b id="st-php">${php(s.rate_usd * s.fx_rate)}</b> per hour</p>
+        <label class="f">Recording rate (₱ per hour)<input name="rate_php" type="number" step="0.01" value="${s.rate_php}"></label>
         <label class="f">Business rate (PHP per shift × scene)<input name="business_rate_php" type="number" step="0.01" value="${s.business_rate_php}"></label>
         <label class="f">Business Google Sheet (ID or link)<input name="business_sheet_id" value="${esc(s.business_sheet_id)}"></label>
         <label class="f">Recorder Google Sheet (ID or link)<input name="recorder_sheet_id" value="${esc(s.recorder_sheet_id)}"></label>
@@ -864,7 +860,6 @@ async function settings() {
       </form>
     </div>`;
   const f = $('#st-form');
-  if (f) f.oninput = () => ($('#st-php').textContent = php(f.rate_usd.value * f.fx_rate.value));
   if (f) f.onsubmit = async (e) => {
     e.preventDefault();
     try {

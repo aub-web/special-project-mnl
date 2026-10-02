@@ -97,8 +97,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   hours       DOUBLE PRECISION NOT NULL,
   category    TEXT NOT NULL DEFAULT 'Studio',    -- Studio | Home Shift | OT
   shift       TEXT,
-  rate_usd    DOUBLE PRECISION NOT NULL,
-  fx_rate     DOUBLE PRECISION NOT NULL,         -- PHP per USD at time of entry
+  rate_php    DOUBLE PRECISION,                  -- ₱ per hour at time of entry (pay = hours × rate_php)
+  rate_usd    DOUBLE PRECISION,                  -- legacy (USD era); kept for history, not used
+  fx_rate     DOUBLE PRECISION,                  -- legacy
   notes       TEXT,
   source      TEXT,                              -- sheet it was imported from, or 'web'
   created_by  INTEGER REFERENCES users(id),
@@ -195,7 +196,18 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRU
 ALTER TABLE users ADD COLUMN IF NOT EXISTS recorder_id INTEGER REFERENCES recorders(id) ON DELETE SET NULL;
 UPDATE users SET role = 'set_director' WHERE role = 'staff';
 
-INSERT INTO settings (key, value) VALUES ('rate_usd', '2.5'), ('fx_rate', '60'), ('ot_rate_php', '150'),
+-- Pesos only: sessions carry a ₱/hour rate. Older rows get rate_usd × fx_rate (e.g. $2.50 × ₱60 = ₱150).
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS rate_php DOUBLE PRECISION;
+ALTER TABLE sessions ALTER COLUMN rate_usd DROP NOT NULL;
+ALTER TABLE sessions ALTER COLUMN fx_rate DROP NOT NULL;
+UPDATE sessions SET rate_php = rate_usd * fx_rate WHERE rate_php IS NULL AND rate_usd IS NOT NULL AND fx_rate IS NOT NULL;
+INSERT INTO settings (key, value)
+  SELECT 'rate_php', (COALESCE((SELECT value::float8 FROM settings WHERE key = 'rate_usd'), 2.5)
+                    * COALESCE((SELECT value::float8 FROM settings WHERE key = 'fx_rate'), 60))::text
+ON CONFLICT (key) DO NOTHING;
+DELETE FROM settings WHERE key IN ('rate_usd', 'fx_rate');
+
+INSERT INTO settings (key, value) VALUES ('ot_rate_php', '150'),
   ('admin_emails', 'aubrey@atlascapture.io'),   -- these emails become admins (pre-approved) when they sign up
   ('business_rate_php', '850'),
   ('business_sheet_id', '1904ps8_vBAG2Nezf7O9gnJveCRNRt38OoC35Ra2W2a8'),
