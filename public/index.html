@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Studio Payout</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%232f6f5e'/><circle cx='16' cy='16' r='5' fill='white'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="dot"></span>Studio Payout</div>
+    <nav id="nav">
+      <a href="#/" data-route="">Dashboard</a>
+      <a href="#/log" data-route="log">Log hours</a>
+      <a href="#/sessions" data-route="sessions">Sessions</a>
+      <a href="#/periods" data-route="periods">Pay periods</a>
+      <a href="#/recorders" data-route="recorders">Recorders</a>
+      <a href="#/locations" data-route="locations">Locations</a>
+      <a href="#/followups" data-route="followups">Follow-ups <span id="fu-badge" class="badge" hidden></span></a>
+      <a href="#/settings" data-route="settings">Settings</a>
+    </nav>
+  </aside>
+  <main id="view"></main>
+  <dialog id="modal"><form method="dialog" id="modal-form"></form></dialog>
+  <div id="toast" role="status"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

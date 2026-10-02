@@ -1,0 +1,532 @@
+// Studio Payout — single-page frontend. Each route is a function that renders into #view.
+
+// ---------- helpers ----------
+const $ = (sel, el = document) => el.querySelector(sel);
+let view = $('#view');
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const php = (n) => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const hrs = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+const today = () => new Date().toLocaleDateString('en-CA');
+const fmtDate = (iso, opts = { month: 'short', day: 'numeric' }) =>
+  iso ? new Date(iso + 'T00:00:00').toLocaleDateString('en-US', opts) : '—';
+const weekday = (iso) => fmtDate(iso, { weekday: 'short' });
+
+async function api(path, opts = {}) {
+  const res = await fetch('/api' + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
+
+function toast(msg, isErr = false) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => (t.className = ''), 2600);
+}
+
+/** Open a modal form. fields: [{name,label,type,value,options,full,required}] → resolves with values or null. */
+function modal({ title, fields, submit = 'Save', extra = '' }) {
+  const dlg = $('#modal'), form = $('#modal-form');
+  const input = (f) => {
+    const common = `name="${f.name}" ${f.required ? 'required' : ''} ${f.step ? `step="${f.step}"` : ''} ${f.list ? `list="${f.list}"` : ''}`;
+    if (f.type === 'select') return `<select ${common}>${f.options.map((o) => {
+      const [v, l] = Array.isArray(o) ? o : [o, o];
+      return `<option value="${esc(v)}" ${String(v) === String(f.value ?? '') ? 'selected' : ''}>${esc(l)}</option>`;
+    }).join('')}</select>`;
+    if (f.type === 'textarea') return `<textarea ${common} rows="3">${esc(f.value)}</textarea>`;
+    return `<input type="${f.type || 'text'}" ${common} value="${esc(f.value)}">`;
+  };
+  const rows = [];
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i], g = fields[i + 1];
+    const lab = (x) => `<label class="f">${esc(x.label)}${input(x)}</label>`;
+    if (!f.full && g && !g.full) { rows.push(`<div class="row">${lab(f)}${lab(g)}</div>`); i++; }
+    else rows.push(lab(f));
+  }
+  form.innerHTML = `<h2>${esc(title)}</h2>${extra}${rows.join('')}
+    <div class="actions"><button value="cancel" formnovalidate>Cancel</button><button value="ok" class="primary">${esc(submit)}</button></div>`;
+  dlg.showModal();
+  form.querySelector('input,select,textarea')?.focus();
+  return new Promise((resolve) => {
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok') return resolve(null);
+      resolve(Object.fromEntries(new FormData(form)));
+    };
+  });
+}
+
+// Shared lookup data used by datalists and selects.
+const cache = {};
+async function lookups(force = false) {
+  if (force || !cache.recorders) {
+    [cache.recorders, cache.locations, cache.settings] = await Promise.all([api('/recorders'), api('/locations'), api('/settings')]);
+  }
+  let dl = $('#dl-recorders');
+  if (!dl) { dl = document.createElement('div'); dl.id = 'dl-wrap'; document.body.append(dl); }
+  $('#dl-wrap').innerHTML =
+    `<datalist id="dl-recorders">${cache.recorders.map((r) => `<option value="${esc(r.name)}">`).join('')}</datalist>` +
+    `<datalist id="dl-locations">${cache.locations.map((l) => `<option value="${esc(l.name)}">`).join('')}</datalist>`;
+  return cache;
+}
+const CATEGORIES = ['Studio', 'Home Shift', 'OT'];
+
+// ---------- routes ----------
+const routes = { '': dashboard, log, sessions, periods, period, recorders, locations, followups, settings };
+
+async function render() {
+  const [route, ...args] = location.hash.replace(/^#\/?/, '').split('?')[0].split('/');
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (route === 'period' ? 'periods' : route)));
+  // Fresh element per page so event listeners from the previous page don't pile up.
+  const fresh = view.cloneNode(false);
+  view.replaceWith(fresh);
+  view = fresh;
+  view.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    await (routes[route] || dashboard)(...args.map(decodeURIComponent));
+  } catch (e) {
+    view.innerHTML = `<div class="card empty">Something went wrong: ${esc(e.message)}</div>`;
+  }
+  refreshBadge();
+}
+async function refreshBadge() {
+  const fu = await api('/followups').catch(() => []);
+  const n = fu.filter((f) => f.status !== 'Resolved').length;
+  const b = $('#fu-badge');
+  b.hidden = !n; b.textContent = n;
+}
+window.addEventListener('hashchange', render);
+
+// ---------- Dashboard ----------
+async function dashboard() {
+  const d = await api('/dashboard');
+  const t = d.totals;
+  const weeks = d.byWeek.slice(-10);
+  const maxW = Math.max(1, ...weeks.map((w) => w.hours));
+  const maxL = Math.max(1, ...d.byLocation.map((l) => l.hours));
+  view.innerHTML = `
+    <div class="head"><div><h1>Dashboard</h1><p>${fmtDate(t.first_date, { month: 'short', day: 'numeric', year: 'numeric' })} – ${fmtDate(t.last_date, { month: 'short', day: 'numeric', year: 'numeric' })}</p></div>
+      <a class="btn primary" href="#/log">+ Log hours</a></div>
+    <div class="grid kpis">
+      <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(t.hours)}</div><div class="sub">${t.sessions} sessions</div></div>
+      <div class="card kpi"><div class="label">Total payout</div><div class="value">${php(t.php)}</div><div class="sub">${usd(t.usd)}</div></div>
+      <div class="card kpi"><div class="label">Recorders</div><div class="value">${t.recorders}</div><div class="sub">across ${t.locations} locations</div></div>
+      <div class="card kpi"><div class="label">Needs attention</div><div class="value">${d.openFollowups}</div>
+        <div class="sub"><a href="#/followups">follow-ups</a> · ${d.openPeriods} <a href="#/periods">open period(s)</a></div></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h2>Hours per week</h2>
+        <div class="chart">${weeks.map((w) => `<div class="col" title="${hrs(w.hours)} h · ${php(w.php)} · ${w.recorders} recorders">
+          <span class="v">${hrs(Math.round(w.hours))}</span><div class="b" style="height:${(w.hours / maxW) * 100}%"></div><small>${fmtDate(w.week)}</small></div>`).join('')}</div>
+        <div class="muted" style="margin-top:8px;font-size:12px">${d.byCategory.map((c) => `${esc(c.category)}: <b>${hrs(c.hours)} h</b>`).join(' · ')}</div>
+      </div>
+      <div class="card"><h2>By location</h2><div class="bars">
+        ${d.byLocation.map((l) => `<div class="bar-row"><span class="name" title="${esc(l.name)}">${esc(l.name)}</span>
+          <div class="bar"><span style="width:${(l.hours / maxL) * 100}%"></span></div><span class="num">${hrs(l.hours)} h</span></div>`).join('')}
+      </div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h2>Top recorders</h2>
+      <table><thead><tr><th>Name</th><th class="num">Days</th><th class="num">Hours</th><th class="num">Earned</th></tr></thead><tbody>
+      ${d.topRecorders.map((r) => `<tr><td><a href="#/sessions/${r.id}">${esc(r.name)}</a></td><td class="num">${r.days}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
+      </tbody></table></div>`;
+}
+
+// ---------- Log hours (replaces the per-day sheet) ----------
+async function log() {
+  const { settings: s } = await lookups();
+  const state = { rows: Array.from({ length: 6 }, () => ({ recorder: '', hours: '', notes: '' })) };
+  view.innerHTML = `
+    <div class="head"><div><h1>Log hours</h1><p>One day at one location — like a daily sheet. Rate ${usd(s.rate_usd)}/h · ₱${s.fx_rate}/$</p></div></div>
+    <div class="card">
+      <div class="toolbar">
+        <label class="f">Date<input type="date" id="lg-date" value="${today()}"></label>
+        <label class="f" style="flex:1;min-width:220px">Location<input id="lg-loc" list="dl-locations" placeholder="e.g. Bam Bam Chicken"></label>
+        <label class="f">Category<select id="lg-cat">${CATEGORIES.map((c) => `<option>${c}</option>`).join('')}</select></label>
+      </div>
+      <div class="log-rows" id="lg-rows"></div>
+      <div style="margin-top:8px"><button id="lg-add" class="ghost">+ Add row</button></div>
+      <div class="sumbar"><span class="muted">Total</span><b id="lg-h">0 h</b><b id="lg-p">₱0.00</b><button class="primary" id="lg-save">Save day</button></div>
+    </div>`;
+  const rowsEl = $('#lg-rows');
+  const draw = () => {
+    rowsEl.innerHTML = `<div class="log-row head-row"><span>Recorder</span><span>Hours</span><span>Notes</span><span></span></div>` +
+      state.rows.map((r, i) => `<div class="log-row" data-i="${i}">
+        <input data-k="recorder" list="dl-recorders" value="${esc(r.recorder)}" placeholder="Full name">
+        <input data-k="hours" type="number" step="0.01" min="0" max="24" value="${esc(r.hours)}">
+        <input data-k="notes" value="${esc(r.notes)}">
+        <button class="ghost" data-del title="Remove">✕</button></div>`).join('');
+    totals();
+  };
+  const totals = () => {
+    const h = state.rows.reduce((a, r) => a + (Number(r.hours) || 0), 0);
+    $('#lg-h').textContent = hrs(h) + ' h';
+    $('#lg-p').textContent = php(h * s.rate_usd * s.fx_rate);
+  };
+  rowsEl.addEventListener('input', (e) => {
+    const i = e.target.closest('.log-row')?.dataset.i;
+    if (i == null || !e.target.dataset.k) return;
+    state.rows[i][e.target.dataset.k] = e.target.value;
+    totals();
+  });
+  rowsEl.addEventListener('click', (e) => {
+    if (!e.target.matches('[data-del]')) return;
+    state.rows.splice(e.target.closest('.log-row').dataset.i, 1);
+    draw();
+  });
+  $('#lg-add').onclick = () => { state.rows.push({ recorder: '', hours: '', notes: '' }); draw(); };
+  $('#lg-save').onclick = async () => {
+    try {
+      const r = await api('/sessions/bulk', { method: 'POST', body: {
+        date: $('#lg-date').value, location: $('#lg-loc').value, category: $('#lg-cat').value, rows: state.rows,
+      } });
+      toast(`Saved ${r.inserted} session(s)`);
+      await lookups(true);
+      location.hash = `#/sessions?from=${$('#lg-date').value}`;
+    } catch (e) { toast(e.message, true); }
+  };
+  draw();
+}
+
+// ---------- Sessions ----------
+async function sessions(recorderId = '') {
+  const { recorders: recs, locations: locs } = await lookups();
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const f = { from: params.get('from') || '', to: params.get('to') || '', recorder_id: recorderId, location_id: '', category: '', q: '' };
+  view.innerHTML = `
+    <div class="head"><div><h1>Sessions</h1><p id="ss-sum" class="muted"></p></div><a class="btn primary" href="#/log">+ Log hours</a></div>
+    <div class="toolbar">
+      <label class="f">From<input type="date" data-f="from" value="${f.from}"></label>
+      <label class="f">To<input type="date" data-f="to" value="${f.to}"></label>
+      <label class="f">Recorder<select data-f="recorder_id"><option value="">All</option>${recs.map((r) => `<option value="${r.id}" ${String(r.id) === f.recorder_id ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
+      <label class="f">Location<select data-f="location_id"><option value="">All</option>${locs.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></label>
+      <label class="f">Category<select data-f="category"><option value="">All</option>${CATEGORIES.map((c) => `<option>${c}</option>`).join('')}</select></label>
+      <label class="f" style="flex:1;min-width:160px">Search<input data-f="q" placeholder="name, location, notes"></label>
+    </div>
+    <div class="table-wrap" id="ss-table"></div>`;
+  let data = [];
+  const load = async () => {
+    data = await api('/sessions?' + qs(f));
+    const H = data.reduce((a, s) => a + s.hours, 0), P = data.reduce((a, s) => a + s.php, 0);
+    $('#ss-sum').textContent = `${data.length} sessions · ${hrs(H)} h · ${php(P)}`;
+    $('#ss-table').innerHTML = data.length ? `<table><thead><tr><th>Date</th><th>Recorder</th><th>Location</th><th>Category</th><th class="num">Hours</th><th class="num">USD</th><th class="num">PHP</th><th>Notes</th><th></th></tr></thead><tbody>
+      ${data.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td>${esc(s.recorder)}</td><td>${esc(s.location || '—')}</td>
+        <td><span class="pill ${s.category === 'Studio' ? 'accent' : s.category === 'OT' ? 'warn' : ''}">${esc(s.category)}</span>${s.shift ? ` <span class="muted" style="font-size:12px">${esc(s.shift)}</span>` : ''}</td>
+        <td class="num">${hrs(s.hours)}</td><td class="num">${usd(s.usd)}</td><td class="num">${php(s.php)}</td>
+        <td class="muted">${esc(s.notes || '')}</td>
+        <td class="num"><button class="ghost" data-edit="${s.id}">Edit</button><button class="ghost danger" data-del="${s.id}">Delete</button></td></tr>`).join('')}
+      </tbody></table>` : '<div class="empty">No sessions match these filters.</div>';
+  };
+  view.querySelector('.toolbar').addEventListener('input', (e) => {
+    const k = e.target.dataset.f; if (!k) return;
+    f[k] = e.target.value;
+    clearTimeout(load.t); load.t = setTimeout(load, k === 'q' ? 250 : 0);
+  });
+  $('#ss-table').addEventListener('click', async (e) => {
+    const id = e.target.dataset.edit || e.target.dataset.del;
+    if (!id) return;
+    const s = data.find((x) => String(x.id) === id);
+    if (e.target.dataset.del) {
+      if (!confirm(`Delete ${s.recorder} · ${s.date} · ${s.hours} h?`)) return;
+      await api('/sessions/' + id, { method: 'DELETE' });
+      toast('Deleted'); return load();
+    }
+    const v = await modal({ title: 'Edit session', fields: [
+      { name: 'recorder', label: 'Recorder', value: s.recorder, list: 'dl-recorders', required: true, full: true },
+      { name: 'date', label: 'Date', type: 'date', value: s.date, required: true },
+      { name: 'hours', label: 'Hours', type: 'number', step: '0.01', value: s.hours, required: true },
+      { name: 'location', label: 'Location', value: s.location || '', list: 'dl-locations' },
+      { name: 'category', label: 'Category', type: 'select', options: CATEGORIES, value: s.category },
+      { name: 'rate_usd', label: 'Rate (USD/h)', type: 'number', step: '0.01', value: s.rate_usd },
+      { name: 'fx_rate', label: 'PHP per USD', type: 'number', step: '0.01', value: s.fx_rate },
+      { name: 'shift', label: 'Shift', value: s.shift || '', full: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', value: s.notes || '', full: true },
+    ] });
+    if (!v) return;
+    try {
+      await api('/sessions/' + id, { method: 'PUT', body: { ...v, recorder_id: null, location_id: null } });
+      toast('Saved'); load();
+    } catch (err) { toast(err.message, true); }
+  });
+  load();
+}
+
+// ---------- Pay periods ----------
+async function periods() {
+  const list = await api('/periods');
+  view.innerHTML = `
+    <div class="head"><div><h1>Pay periods</h1><p>Each period generates the summary sheet automatically from logged sessions.</p></div>
+      <div style="display:flex;gap:8px"><button id="pp-custom">Custom range</button><button class="primary" id="pp-new">+ New period</button></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Period</th><th>Dates</th><th>Status</th><th class="num">Recorders</th><th class="num">Hours</th><th class="num">Payout</th><th class="num">Marked paid</th><th>Notes</th></tr></thead><tbody>
+    ${list.map((p) => `<tr><td><a href="#/period/${p.id}"><b>${esc(p.name)}</b></a></td><td>${fmtDate(p.start_date)} – ${fmtDate(p.end_date)}</td>
+      <td><span class="pill ${p.status === 'Open' ? 'warn' : 'ok'}">${esc(p.status)}</span></td>
+      <td class="num">${p.recorders}</td><td class="num">${hrs(p.hours)}</td><td class="num">${php(p.php)}</td>
+      <td class="num">${p.paid_php ? php(p.paid_php) : '<span class="muted">—</span>'}</td><td class="muted">${esc(p.notes || '')}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  $('#pp-new').onclick = async () => {
+    const v = await modal({ title: 'New pay period', fields: [
+      { name: 'start_date', label: 'Start', type: 'date', required: true },
+      { name: 'end_date', label: 'End', type: 'date', required: true },
+      { name: 'name', label: 'Name (optional)', full: true },
+      { name: 'notes', label: 'Notes', full: true },
+    ] });
+    if (!v) return;
+    try { const p = await api('/periods', { method: 'POST', body: v }); location.hash = '#/period/' + p.id; }
+    catch (e) { toast(e.message, true); }
+  };
+  $('#pp-custom').onclick = async () => {
+    const v = await modal({ title: 'Summary for any date range', submit: 'View', fields: [
+      { name: 'from', label: 'From', type: 'date', required: true }, { name: 'to', label: 'To', type: 'date', required: true },
+    ] });
+    if (v) location.hash = `#/period/range?${qs(v)}`;
+  };
+}
+
+async function period(id = '') {
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  let p = null;
+  if (id !== 'range') {
+    p = (await api('/periods')).find((x) => String(x.id) === id);
+    if (!p) throw new Error('Period not found');
+  }
+  const filt = { from: p?.start_date || params.get('from'), to: p?.end_date || params.get('to'), category: '', location_id: '', period_id: p?.id || '' };
+  const { locations: locs } = await lookups();
+  view.innerHTML = `
+    <div class="head"><div><a href="#/periods" class="muted">← Pay periods</a><h1>${esc(p?.name || 'Custom range')}</h1>
+      <p>${fmtDate(filt.from, { month: 'short', day: 'numeric', year: 'numeric' })} – ${fmtDate(filt.to, { month: 'short', day: 'numeric', year: 'numeric' })}${p?.notes ? ' · ' + esc(p.notes) : ''}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${p ? `<button id="pd-status">${p.status === 'Open' ? 'Close period' : 'Reopen period'}</button><button id="pd-edit">Edit</button>` : ''}
+        <a class="btn" id="pd-csv">Export CSV</a><button id="pd-print">Print</button></div></div>
+    <div class="grid kpis" id="pd-kpis"></div>
+    <div class="toolbar">
+      <label class="f">Category<select data-f="category"><option value="">All</option>${CATEGORIES.map((c) => `<option>${c}</option>`).join('')}</select></label>
+      <label class="f">Location<select data-f="location_id"><option value="">All</option>${locs.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></label>
+    </div>
+    <div class="table-wrap" id="pd-table"></div>`;
+  let sum;
+  const load = async () => {
+    sum = await api('/summary?' + qs(filt));
+    $('#pd-csv').href = '/api/summary.csv?' + qs(filt);
+    const T = sum.totals;
+    const paidCount = sum.rows.filter((r) => r.payment?.status === 'Paid').length;
+    $('#pd-kpis').innerHTML = `
+      <div class="card kpi"><div class="label">Recorders</div><div class="value">${sum.rows.length}</div></div>
+      <div class="card kpi"><div class="label">Hours</div><div class="value">${hrs(T.hours)}</div></div>
+      <div class="card kpi"><div class="label">Payout</div><div class="value">${php(T.php)}</div><div class="sub">${usd(T.usd)}</div></div>
+      ${p ? `<div class="card kpi"><div class="label">Paid</div><div class="value">${paidCount}/${sum.rows.length}</div><div class="sub">${php(T.paid_php)} sent</div></div>` : ''}`;
+    if (!sum.rows.length) { $('#pd-table').innerHTML = '<div class="empty">No sessions in this range.</div>'; return; }
+    $('#pd-table').innerHTML = `<table><thead><tr><th class="sticky-col">Name of recorder</th>
+      ${sum.dates.map((d) => `<th class="num">${fmtDate(d)}<br><span style="font-weight:400">${weekday(d)}</span></th>`).join('')}
+      <th class="num">Total h</th><th class="num">USD</th><th class="num">PH earned</th>${p ? '<th>Payment</th>' : ''}</tr></thead><tbody>
+      ${sum.rows.map((r) => `<tr><td class="sticky-col"><a href="#/sessions/${r.recorder_id}?${qs({ from: filt.from, to: filt.to })}">${esc(r.name)}</a>
+          <div class="muted" style="font-size:11px">${esc(r.locations.join(' · '))}</div></td>
+        ${sum.dates.map((d) => `<td class="num ${r.by_date[d] ? '' : 'zero'}">${r.by_date[d] ? hrs(r.by_date[d]) : '0'}</td>`).join('')}
+        <td class="num"><b>${hrs(r.hours)}</b></td><td class="num">${usd(r.usd)}</td><td class="num"><b>${php(r.php)}</b></td>
+        ${p ? `<td>${payCell(r)}</td>` : ''}</tr>`).join('')}
+      </tbody><tfoot><tr><td class="sticky-col">Total</td>${sum.dates.map((d) => `<td class="num">${hrs(T.by_date[d])}</td>`).join('')}
+        <td class="num">${hrs(T.hours)}</td><td class="num">${usd(T.usd)}</td><td class="num">${php(T.php)}</td>${p ? '<td></td>' : ''}</tr></tfoot></table>`;
+  };
+  const payCell = (r) => {
+    const pm = r.payment;
+    if (!pm) return `<button class="ghost" data-pay="${r.recorder_id}">Mark paid</button>`;
+    const cls = pm.status === 'Paid' ? 'ok' : 'warn';
+    const diff = Math.abs(pm.amount_php - r.php) > 0.009 ? ` <span class="pill warn" title="Logged ${php(r.php)}">≠ ${php(pm.amount_php)}</span>` : '';
+    return `<button class="ghost" data-pay="${r.recorder_id}"><span class="pill ${cls}">${esc(pm.status)}</span></button>${diff}`;
+  };
+  view.querySelector('.toolbar').addEventListener('input', (e) => { filt[e.target.dataset.f] = e.target.value; load(); });
+  $('#pd-print').onclick = () => window.print();
+  $('#pd-table').addEventListener('click', async (e) => {
+    const rid = e.target.closest('[data-pay]')?.dataset.pay;
+    if (!rid) return;
+    const r = sum.rows.find((x) => String(x.recorder_id) === rid);
+    const pm = r.payment || {};
+    const v = await modal({ title: `Payment · ${r.name}`, submit: 'Save payment',
+      extra: `<p class="muted" style="margin:0">Logged: <b>${hrs(r.hours)} h</b> = <b>${php(r.php)}</b></p>`,
+      fields: [
+        { name: 'amount_php', label: 'Amount sent (PHP)', type: 'number', step: '0.01', value: pm.amount_php ?? r.php.toFixed(2), required: true },
+        { name: 'status', label: 'Status', type: 'select', options: ['Paid', 'Pending', 'Issue', 'Not paid'], value: pm.status || 'Paid' },
+        { name: 'paid_at', label: 'Date sent', type: 'date', value: pm.paid_at || today() },
+        { name: 'account_no', label: 'Account no.', value: pm.account_no || r.payout_account_no || '' },
+        { name: 'reference', label: 'Reference no.', value: pm.reference || '', full: true },
+        { name: 'notes', label: 'Notes', type: 'textarea', value: pm.notes || '', full: true },
+      ] });
+    if (!v) return;
+    if (v.status === 'Not paid') await api(`/periods/${p.id}/payments/${rid}`, { method: 'DELETE' });
+    else await api(`/periods/${p.id}/payments/${rid}`, { method: 'PUT', body: v });
+    toast('Payment saved'); load();
+  });
+  if (p) {
+    $('#pd-status').onclick = async () => {
+      await api('/periods/' + p.id, { method: 'PUT', body: { status: p.status === 'Open' ? 'Closed' : 'Open' } });
+      render();
+    };
+    $('#pd-edit').onclick = async () => {
+      const v = await modal({ title: 'Edit period', fields: [
+        { name: 'name', label: 'Name', value: p.name, full: true },
+        { name: 'start_date', label: 'Start', type: 'date', value: p.start_date },
+        { name: 'end_date', label: 'End', type: 'date', value: p.end_date },
+        { name: 'notes', label: 'Notes', value: p.notes || '', full: true },
+      ] });
+      if (v) { await api('/periods/' + p.id, { method: 'PUT', body: v }); render(); }
+    };
+  }
+  load();
+}
+
+// ---------- Recorders ----------
+async function recorders() {
+  const { recorders: list } = await lookups(true);
+  view.innerHTML = `
+    <div class="head"><div><h1>Recorders</h1><p>${list.length} people · click a row to edit, merge duplicates, or see sessions</p></div>
+      <div style="display:flex;gap:8px"><input id="rc-q" placeholder="Search…"><button class="primary" id="rc-new">+ Add recorder</button></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>App acct.</th><th>Payout account</th><th class="num">Sessions</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
+    <tbody id="rc-body"></tbody></table></div>`;
+  const draw = (q = '') => {
+    const ql = q.toLowerCase();
+    $('#rc-body').innerHTML = list.filter((r) => !ql || (r.name + ' ' + (r.aliases || '')).toLowerCase().includes(ql)).map((r) => `<tr>
+      <td><b>${esc(r.name)}</b>${r.aliases ? `<div class="muted" style="font-size:11px">aka ${esc(r.aliases)}</div>` : ''}${r.active ? '' : ' <span class="pill">inactive</span>'}</td>
+      <td>${esc(r.app_account || '')}</td><td>${esc(r.payout_account_no || '')}${r.payout_account_name ? `<div class="muted" style="font-size:11px">${esc(r.payout_account_name)}</div>` : ''}</td>
+      <td class="num">${r.sessions}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td><td>${fmtDate(r.last_date)}</td>
+      <td class="num"><a class="btn ghost" href="#/sessions/${r.id}">Sessions</a><button class="ghost" data-edit="${r.id}">Edit</button><button class="ghost" data-merge="${r.id}">Merge…</button></td></tr>`).join('');
+  };
+  $('#rc-q').oninput = (e) => draw(e.target.value);
+  $('#rc-new').onclick = async () => {
+    const v = await modal({ title: 'Add recorder', fields: [{ name: 'name', label: 'Full name', required: true, full: true }] });
+    if (v) { await api('/recorders', { method: 'POST', body: v }); render(); }
+  };
+  $('#rc-body').addEventListener('click', async (e) => {
+    const id = e.target.dataset.edit || e.target.dataset.merge;
+    if (!id) return;
+    const r = list.find((x) => String(x.id) === id);
+    if (e.target.dataset.merge) {
+      const v = await modal({ title: `Merge "${r.name}" into…`, submit: 'Merge',
+        extra: '<p class="muted" style="margin:0">All sessions and payments move to the selected person; this name is kept as an alias so future imports match.</p>',
+        fields: [{ name: 'into', label: 'Keep this recorder', type: 'select', full: true,
+          options: list.filter((x) => x.id !== r.id).map((x) => [x.id, x.name]) }] });
+      if (!v) return;
+      await api(`/recorders/${id}/merge`, { method: 'POST', body: v });
+      toast('Merged'); return render();
+    }
+    const v = await modal({ title: 'Edit recorder', fields: [
+      { name: 'name', label: 'Full name', value: r.name, required: true, full: true },
+      { name: 'app_account', label: 'App account no.', value: r.app_account || '' },
+      { name: 'contact', label: 'Contact (phone / email)', value: r.contact || '' },
+      { name: 'payout_account_no', label: 'Payout account no. (GoTyme/GCash/bank)', value: r.payout_account_no || '' },
+      { name: 'payout_account_name', label: 'Payout account name', value: r.payout_account_name || '' },
+      { name: 'active', label: 'Status', type: 'select', options: [['1', 'Active'], ['0', 'Inactive']], value: String(r.active) },
+      { name: 'notes', label: 'Notes', type: 'textarea', value: r.notes || '', full: true },
+    ] });
+    if (!v) return;
+    try { await api('/recorders/' + id, { method: 'PUT', body: { ...v, active: Number(v.active) } }); toast('Saved'); render(); }
+    catch (err) { toast(err.message, true); }
+  });
+  draw();
+}
+
+// ---------- Locations ----------
+async function locations() {
+  const { locations: list } = await lookups(true);
+  view.innerHTML = `
+    <div class="head"><div><h1>Locations</h1><p>Businesses and sites where recording happens</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Location</th><th>Active</th><th class="num">Recorders</th><th class="num">Sessions</th><th class="num">Hours</th><th class="num">Payout</th><th>Notes</th><th></th></tr></thead><tbody>
+    ${list.map((l) => `<tr><td><b>${esc(l.name)}</b></td><td>${l.first_date ? `${fmtDate(l.first_date)} – ${fmtDate(l.last_date)}` : '—'}</td>
+      <td class="num">${l.recorders}</td><td class="num">${l.sessions}</td><td class="num">${hrs(l.hours)}</td><td class="num">${php(l.php)}</td>
+      <td class="muted">${esc(l.notes || '')}</td><td class="num"><a class="btn ghost" href="#/sessions?${qs({ from: l.first_date, to: l.last_date })}">Sessions</a><button class="ghost" data-edit="${l.id}">Edit</button><button class="ghost" data-merge="${l.id}">Merge…</button></td></tr>`).join('')}
+    </tbody></table></div>`;
+  view.addEventListener('click', async (e) => {
+    const id = e.target.dataset.edit || e.target.dataset.merge; if (!id) return;
+    const l = list.find((x) => String(x.id) === id);
+    if (e.target.dataset.merge) {
+      const v = await modal({ title: `Merge "${l.name}" into…`, submit: 'Merge',
+        extra: '<p class="muted" style="margin:0">All sessions at this location move to the selected one.</p>',
+        fields: [{ name: 'into', label: 'Keep this location', type: 'select', full: true, options: list.filter((x) => x.id !== l.id).map((x) => [x.id, x.name]) }] });
+      if (v) { await api(`/locations/${id}/merge`, { method: 'POST', body: v }); toast('Merged'); render(); }
+      return;
+    }
+    const v = await modal({ title: 'Edit location', fields: [
+      { name: 'name', label: 'Name', value: l.name, required: true, full: true },
+      { name: 'notes', label: 'Notes / address', type: 'textarea', value: l.notes || '', full: true },
+    ] });
+    if (v) { await api('/locations/' + id, { method: 'PUT', body: v }); render(); }
+  });
+}
+
+// ---------- Follow-ups ----------
+async function followups() {
+  const [list] = await Promise.all([api('/followups'), lookups()]);
+  view.innerHTML = `
+    <div class="head"><div><h1>Follow-ups</h1><p>Payment issues to chase — wrong accounts, short payments, missing paperwork</p></div>
+      <button class="primary" id="fu-new">+ New follow-up</button></div>
+    ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Recorder</th><th>Issue</th><th class="num">Expected</th><th class="num">Received</th><th class="num">Difference</th><th>Account before → new</th><th>Status</th><th></th></tr></thead><tbody>
+    ${list.map((f) => {
+      const diff = f.expected_php != null && f.received_php != null ? f.received_php - f.expected_php : null;
+      return `<tr><td><b>${esc(f.recorder || '—')}</b></td><td>${esc(f.description || '')}${f.notes ? `<div class="muted" style="font-size:12px;max-width:420px">${esc(f.notes)}</div>` : ''}</td>
+      <td class="num">${f.expected_php != null ? php(f.expected_php) : '—'}</td><td class="num">${f.received_php != null ? php(f.received_php) : '—'}</td>
+      <td class="num">${diff != null ? php(diff) : '—'}</td>
+      <td style="font-size:12px">${esc(f.old_account_no || '')} ${esc(f.old_account_name || '')}${f.new_account_no ? ` → <b>${esc(f.new_account_no)}</b> ${esc(f.new_account_name || '')}` : ''}</td>
+      <td><span class="pill ${f.status === 'Resolved' ? 'ok' : 'warn'}">${esc(f.status)}</span></td>
+      <td class="num"><button class="ghost" data-edit="${f.id}">Edit</button></td></tr>`;
+    }).join('')}</tbody></table></div>` : '<div class="card empty">Nothing to follow up 🎉</div>'}`;
+  const form = (f = {}) => modal({ title: f.id ? 'Edit follow-up' : 'New follow-up', fields: [
+    { name: 'recorder', label: 'Recorder', value: f.recorder || '', list: 'dl-recorders', required: true, full: true },
+    { name: 'description', label: 'Issue', value: f.description || '', full: true },
+    { name: 'expected_php', label: 'Expected (PHP)', type: 'number', step: '0.01', value: f.expected_php ?? '' },
+    { name: 'received_php', label: 'Received (PHP)', type: 'number', step: '0.01', value: f.received_php ?? '' },
+    { name: 'old_account_no', label: 'Account before — no.', value: f.old_account_no || '' },
+    { name: 'old_account_name', label: 'Account before — name', value: f.old_account_name || '' },
+    { name: 'new_account_no', label: 'New account — no.', value: f.new_account_no || '' },
+    { name: 'new_account_name', label: 'New account — name', value: f.new_account_name || '' },
+    { name: 'status', label: 'Status', type: 'select', options: ['Open', 'Resolved'], value: f.status || 'Open', full: true },
+    { name: 'notes', label: 'Notes', type: 'textarea', value: f.notes || '', full: true },
+  ] });
+  const clean = (v) => {
+    const rec = cache.recorders.find((r) => r.name.toLowerCase() === v.recorder.trim().toLowerCase());
+    const out = { ...v, recorder_id: rec?.id ?? null };
+    for (const k of ['expected_php', 'received_php']) out[k] = v[k] === '' ? null : Number(v[k]);
+    if (!rec) { out.recorder = v.recorder; delete out.recorder_id; }
+    else delete out.recorder;
+    return out;
+  };
+  $('#fu-new').onclick = async () => {
+    const v = await form(); if (!v) return;
+    await api('/followups', { method: 'POST', body: clean(v) }); render();
+  };
+  view.addEventListener('click', async (e) => {
+    const id = e.target.dataset.edit; if (!id) return;
+    const v = await form(list.find((x) => String(x.id) === id)); if (!v) return;
+    const body = clean(v);
+    if (body.recorder) body.recorder_id = (await api('/recorders', { method: 'POST', body: { name: body.recorder } })).id;
+    delete body.recorder;
+    await api('/followups/' + id, { method: 'PUT', body }); render();
+  });
+}
+
+// ---------- Settings ----------
+async function settings() {
+  const s = await api('/settings');
+  view.innerHTML = `
+    <div class="head"><div><h1>Settings</h1><p>Defaults for new sessions. Existing sessions keep the rate they were logged with.</p></div></div>
+    <div class="card" style="max-width:520px">
+      <form id="st-form" class="grid">
+        <label class="f">Recording rate (USD per hour)<input name="rate_usd" type="number" step="0.01" value="${s.rate_usd}"></label>
+        <label class="f">Exchange rate (PHP per USD)<input name="fx_rate" type="number" step="0.01" value="${s.fx_rate}"></label>
+        <p class="muted" style="margin:0">= <b id="st-php">${php(s.rate_usd * s.fx_rate)}</b> per hour</p>
+        <div><button class="primary">Save settings</button></div>
+      </form>
+    </div>`;
+  const f = $('#st-form');
+  f.oninput = () => ($('#st-php').textContent = php(f.rate_usd.value * f.fx_rate.value));
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    await api('/settings', { method: 'PUT', body: Object.fromEntries(new FormData(f)) });
+    cache.recorders = null; toast('Settings saved');
+  };
+}
+
+render();

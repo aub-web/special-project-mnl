@@ -1,0 +1,8 @@
+node_modules/
+# Payout data (names, amounts, account numbers) stays local — never commit it.
+data/
+*.db
+*.db-wal
+*.db-shm
+*.xlsx
+.env
