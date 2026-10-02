@@ -9,6 +9,7 @@ import express from 'express';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { q, one, tx, getSettings, nameKey } from './db.js';
 import { requireAdmin } from './auth.js';
+import { pushRecorderToSheet } from './sheet-writeback.js';
 
 export const publicRouter = express.Router();   // mounted before sign-in is required
 export const router = express.Router();         // mounted after sign-in
@@ -142,7 +143,7 @@ router.get('/registrations', requireAdmin, wrap(async () => {
 router.post('/registrations/:id/approve', requireAdmin, wrap(async (req) => {
   const id = Number(req.params.id);
   const target = req.body?.recorder_id ? Number(req.body.recorder_id) : null; // null = create a new recorder
-  return tx(async (c) => {
+  const result = await tx(async (c) => {
     const g = await one(`SELECT * FROM registrations WHERE id = $1 AND status = 'Pending' FOR UPDATE`, [id], c);
     if (!g) throw fail('This registration was already handled.', 404);
     const method = g.payment_method === 'Bank' ? `Bank – ${g.bank_name}` : g.payment_method;
@@ -165,6 +166,8 @@ router.post('/registrations/:id/approve', requireAdmin, wrap(async (req) => {
     await q(`UPDATE registrations SET status = 'Approved', recorder_id = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1`, [id, rid, req.user.id], c);
     return { ok: true, recorder_id: rid };
   });
+  // Add/update them in the recorder Google Sheet (after the database commit; a sheet problem never blocks approval).
+  return { ...result, sheet: await pushRecorderToSheet(result.recorder_id) };
 }));
 
 // Rejecting deletes the uploaded IDs/signatures right away (no reason to keep personal documents).

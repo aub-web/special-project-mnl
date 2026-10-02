@@ -6,6 +6,7 @@ import { router as businessRoutes } from './businesses.js';
 import { router as recorderSyncRoutes, driveUrl } from './recorders-sync.js';
 import { router as payoutSyncRoutes } from './payout-sync.js';
 import { router as registrationRoutes, publicRouter as registrationPublicRoutes } from './registrations.js';
+import { router as writebackRoutes, pushRecorderToSheet } from './sheet-writeback.js';
 
 export const app = express();
 app.use(express.json({ limit: '8mb' })); // room for an uploaded .xlsx (base64)
@@ -113,6 +114,7 @@ app.use('/api', businessRoutes);
 app.use('/api', recorderSyncRoutes);
 app.use('/api', payoutSyncRoutes);
 app.use('/api', registrationRoutes);
+app.use('/api', writebackRoutes);
 app.get('/api/auth/me', wrap((req) => req.user));
 
 app.post('/api/auth/password', wrap(async (req) => {
@@ -231,10 +233,13 @@ app.get('/api/recorders', wrap((req) => {
 
 app.post('/api/recorders', wrap(async (req) => {
   if (!req.body.name?.trim()) throw fail('Name is required');
-  return one('SELECT * FROM recorders WHERE id = $1', [await resolveRecorder(req.body.name)]);
+  const id = await resolveRecorder(req.body.name);
+  const sheet = await pushRecorderToSheet(id);
+  return { ...(await one('SELECT * FROM recorders WHERE id = $1', [id])), sheet };
 }));
 
 app.put('/api/recorders/:id', wrap(async (req) => {
+  const before = await one('SELECT name FROM recorders WHERE id = $1', [Number(req.params.id)]);
   // Document links must be Google Drive/Docs URLs (they're rendered as links for admins).
   for (const k of ['id_document_url', 'contract_url']) {
     if (req.body[k] && !driveUrl(req.body[k])) throw fail('Document links must be Google Drive or Google Docs links (https://drive.google.com/…)');
@@ -243,7 +248,10 @@ app.put('/api/recorders/:id', wrap(async (req) => {
   await updateFields('recorders', req.params.id, req.body,
     ['name', 'app_account', 'payout_account_no', 'payout_account_name', 'payment_method', 'contact', 'email', 'address',
       'id_document', 'id_document_url', 'contract', 'contract_url', 'contract_hard_copy', 'contract_status', 'active', 'notes']);
-  return one('SELECT * FROM recorders WHERE id = $1', [Number(req.params.id)]);
+  // Keep the recorder sheet in step, or the next sheet → app sync would undo this edit.
+  const profile = ['name', 'email', 'contact', 'address', 'payment_method', 'payout_account_no'];
+  const sheet = profile.some((k) => k in req.body) ? await pushRecorderToSheet(Number(req.params.id), { previousName: before?.name }) : null;
+  return { ...(await one('SELECT * FROM recorders WHERE id = $1', [Number(req.params.id)])), sheet };
 }));
 
 // Merge a duplicate into another recorder: moves sessions/payments, keeps the old name as an alias.

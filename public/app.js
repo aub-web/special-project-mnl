@@ -357,6 +357,15 @@ async function log() {
   draw();
 }
 
+/** After add/edit/approve: report whether the recorder sheet was updated (silent when write-back isn't set up). */
+function sheetNote(sheet) {
+  if (!sheet || sheet.skipped) return '';
+  return sheet.ok ? ` · ${sheet.updated ? 'updated' : 'added to'} the recorder sheet (row ${sheet.row})` : '';
+}
+function sheetWarn(sheet) {
+  if (sheet && !sheet.ok && !sheet.skipped) toast(`Saved in the app, but the recorder sheet wasn't updated: ${sheet.error}`, true);
+}
+
 // ---------- Hours sheet sync (admins) ----------
 // The team still edits hours in the "Studio Payout Summary" sheet; this pulls those edits in.
 // Sessions logged in the app are never touched by a sync.
@@ -697,7 +706,9 @@ async function recorders() {
   $('#rc-f').onchange = draw;
   $('#rc-new').onclick = async () => {
     const v = await modal({ title: 'Add recorder', fields: [{ name: 'name', label: 'Full name', required: true, full: true }] });
-    if (v) { await api('/recorders', { method: 'POST', body: v }); render(); }
+    if (!v) return;
+    const res = await api('/recorders', { method: 'POST', body: v });
+    toast(`Added ${res.name}${sheetNote(res.sheet)}`); sheetWarn(res.sheet); render();
   };
   if (admin) $('#rc-sync').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = 'Syncing…';
@@ -749,8 +760,8 @@ async function recorders() {
           options: [...g.matches.map((m) => [m.id, `Update existing: ${m.name}${m.email ? ` (${m.email})` : ''}`]), ['', 'New recorder']],
           value: g.matches[0]?.id ?? '' }] });
       if (!v) return;
-      await api(`/registrations/${g.id}/approve`, { method: 'POST', body: { recorder_id: v.recorder_id || null } });
-      toast(`${g.name} approved`); render();
+      const res = await api(`/registrations/${g.id}/approve`, { method: 'POST', body: { recorder_id: v.recorder_id || null } });
+      toast(`${g.name} approved${sheetNote(res.sheet)}`); sheetWarn(res.sheet); render();
     } catch (err) { toast(err.message, true); }
   });
   $('#rc-body').addEventListener('click', async (e) => {
@@ -801,7 +812,7 @@ async function recorders() {
       { name: 'notes', label: 'Notes', type: 'textarea', value: r.notes || '', full: true },
     ] });
     if (!v) return;
-    try { await api('/recorders/' + id, { method: 'PUT', body: { ...v, active: v.active === 'true' } }); toast('Saved'); render(); }
+    try { const res = await api('/recorders/' + id, { method: 'PUT', body: { ...v, active: v.active === 'true' } }); toast('Saved' + sheetNote(res.sheet)); sheetWarn(res.sheet); render(); }
     catch (err) { toast(err.message, true); }
   });
   draw();
@@ -1006,6 +1017,22 @@ async function settings() {
         <label class="f">Auto-admin emails (become admin when they sign up)<input name="admin_emails" value="${esc(s.admin_emails)}"></label>
         <div><button class="primary">Save</button></div>
       </form>` : ''}
+      ${admin ? `<div class="card grid">
+        <h2>Write new recorders into the recorder sheet</h2>
+        <p class="muted" style="margin:0;font-size:13px">When you approve a registration, or add/edit a recorder here, the app updates their row in the recorder
+          Google Sheet (or adds one). One-time setup, about 3 minutes:</p>
+        <ol style="margin:0;padding-left:18px;font-size:13px;display:grid;gap:4px">
+          <li><button type="button" class="btn" id="wb-copy">Copy script</button> (it already includes your secret code)</li>
+          <li>Open the <a href="https://docs.google.com/spreadsheets/d/${esc(String(s.recorder_sheet_id || '').match(/[\w-]{20,}/)?.[0] || '')}/edit" target="_blank" rel="noopener">recorder sheet</a>
+            → <b>Extensions → Apps Script</b> → replace everything in <b>Code.gs</b> with the copied script → <b>Save</b></li>
+          <li><b>Deploy → New deployment</b> → type <b>Web app</b> → Execute as <b>Me</b>, Who has access <b>Anyone</b> → <b>Deploy</b> → allow access</li>
+          <li>Paste the <b>Web app URL</b> below, <b>Save</b>, then <b>Test</b></li>
+        </ol>
+        <form id="wb-form" class="grid" style="gap:8px">
+          <label class="f">Apps Script web app URL<input name="recorder_sheet_webhook" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(s.recorder_sheet_webhook || '')}"></label>
+          <div style="display:flex;gap:8px"><button class="primary">Save</button><button type="button" id="wb-test">Test</button></div>
+        </form>
+      </div>` : ''}
       <form id="pw-form" class="card grid">
         <h2>Change my password</h2>
         <label class="f">Current password<input name="current" type="password" autocomplete="current-password" required></label>
@@ -1021,6 +1048,23 @@ async function settings() {
       cache.recorders = null; toast('Settings saved');
     } catch (err) { toast(err.message, true); }
   };
+  if (admin) {
+    $('#wb-copy').onclick = async () => {
+      const code = (await (await fetch('/apps-script/recorder-sheet.gs')).text()).replace('PASTE_THE_SECRET_FROM_THE_APP_HERE', s.sheets_webhook_secret);
+      try { await navigator.clipboard.writeText(code); toast('Script copied — paste it into Apps Script'); }
+      catch { await modal({ title: 'Copy this script', submit: 'Done', fields: [], extra: `<textarea readonly rows="14" style="width:100%;font-family:monospace;font-size:12px">${esc(code)}</textarea>` }); }
+    };
+    $('#wb-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const url = e.target.recorder_sheet_webhook.value.trim();
+      if (url && !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) return toast('That should be the Web app URL ending in /exec', true);
+      try { await api('/settings', { method: 'PUT', body: { recorder_sheet_webhook: url } }); toast('Saved'); } catch (err) { toast(err.message, true); }
+    };
+    $('#wb-test').onclick = async () => {
+      const r = await api('/sheets/test', { method: 'POST' });
+      toast(r.ok ? `Connected to "${r.sheet}" ✓` : (r.error || 'Not connected'), !r.ok);
+    };
+  }
   $('#pw-form').onsubmit = async (e) => {
     e.preventDefault();
     try {

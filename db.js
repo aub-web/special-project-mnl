@@ -224,6 +224,10 @@ CREATE TABLE IF NOT EXISTS recorder_files (
 );
 CREATE INDEX IF NOT EXISTS idx_recorder_files_recorder ON recorder_files(recorder_id);
 
+-- Shared secret for the Apps Script write-back (app → recorder sheet).
+INSERT INTO settings (key, value) VALUES ('sheets_webhook_secret', replace(gen_random_uuid()::text, '-', '')), ('recorder_sheet_webhook', '')
+ON CONFLICT (key) DO NOTHING;
+
 -- The key in the registration link; regenerate it to switch off an old link.
 INSERT INTO settings (key, value) VALUES ('registration_key', replace(gen_random_uuid()::text, '-', ''))
 ON CONFLICT (key) DO NOTHING;
@@ -258,7 +262,7 @@ ON CONFLICT (key) DO NOTHING;
 
 // Bump when SCHEMA changes. The schema (with its ALTER TABLEs, which lock tables) only runs when the
 // stored version differs, so serverless cold starts don't block a running sync.
-const SCHEMA_VERSION = '2026-10-02.registration';
+const SCHEMA_VERSION = '2026-10-02.writeback';
 
 let migrated;
 /** Create/upgrade tables if needed. Cached so each cold start checks once. */
@@ -276,7 +280,7 @@ export function migrate() {
 export async function getSettings(db = pool) {
   const out = {};
   for (const { key, value } of await q('SELECT key, value FROM settings', [], db)) {
-    out[key] = isNaN(Number(value)) ? value : Number(value);
+    out[key] = value.trim() !== '' && !isNaN(Number(value)) ? Number(value) : value; // '' stays '' (Number('') is 0)
   }
   return out;
 }
