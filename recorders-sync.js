@@ -26,11 +26,25 @@ const COLUMNS = [
   [/contract/i, 'contract', clean],
 ];
 
+// Only Google Drive / Docs links are kept (never javascript: or other hosts).
+export const driveUrl = (u) => (/^https:\/\/(drive|docs)\.google\.com\//.test(String(u || '').trim()) ? String(u).trim() : null);
+
+/** The hyperlink behind a cell (Drive file chips export as links), if any. */
+export function cellLink(ws, rowIdx, colIdx) {
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const cell = ws[XLSX.utils.encode_cell({ r: range.s.r + rowIdx, c: range.s.c + colIdx })];
+  return driveUrl(cell?.l?.Target);
+}
+
+// Columns whose file chips/links we keep, and where the link goes.
+const LINKED = { id_document: 'id_document_url', contract: 'contract_url' };
+
 /** Exported for testing: workbook → [{ name, fields }] */
 export function parseRecorderWorkbook(wb) {
   const out = [];
   for (const n of wb.SheetNames) {
-    const data = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null });
+    const ws = wb.Sheets[n];
+    const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: true });
     const h = data.findIndex((r) => r.some((c) => /address/i.test(clean(c))) && r.some((c) => /payment/i.test(clean(c))));
     if (h < 0) continue;
     const map = [];
@@ -38,16 +52,22 @@ export function parseRecorderWorkbook(wb) {
       const col = COLUMNS.find(([re, key]) => re.test(clean(c)) && !map.some((m) => m.key === key));
       if (col) map.push({ i, key: col[1], fn: col[2] });
     });
-    for (const r of data.slice(h + 1)) {
+    data.forEach((r, rowIdx) => {
+      if (rowIdx <= h) return;
       const name = clean(r[0]);
-      if (!name) continue;
+      if (!name) return;
       const fields = {};
       for (const m of map) {
         const v = m.fn(r[m.i]);
         if (v) fields[m.key] = v;
+        if (LINKED[m.key]) {
+          // A pasted URL (e.g. a Docs link typed into the contract column) counts as the link too.
+          const link = cellLink(ws, rowIdx, m.i) || driveUrl(v);
+          if (link) fields[LINKED[m.key]] = link;
+        }
       }
       out.push({ name, fields });
-    }
+    });
   }
   return out;
 }

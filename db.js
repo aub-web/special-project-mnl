@@ -183,6 +183,9 @@ ALTER TABLE recorders ADD COLUMN IF NOT EXISTS payment_method TEXT;
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS id_document TEXT;          -- name of the ID file on record
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract TEXT;             -- signed service agreement (file name or link)
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_hard_copy TEXT;   -- "done" / "not yet"
+-- Google Drive links behind the sheet's file chips. Only the link is stored; Drive sharing controls who can open it.
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS id_document_url TEXT;
+ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_url TEXT;
 
 -- Self sign-up: new accounts wait for an admin to approve them.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;

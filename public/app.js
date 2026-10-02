@@ -491,14 +491,15 @@ async function period(id = '') {
     if (!sum.rows.length) { $('#pd-table').innerHTML = '<div class="empty">No sessions in this range.</div>'; return; }
     $('#pd-table').innerHTML = `<table><thead><tr><th class="sticky-col">Name of recorder</th>
       ${sum.dates.map((d) => `<th class="num">${fmtDate(d)}<br><span style="font-weight:400">${weekday(d)}</span></th>`).join('')}
-      <th class="num">Total h</th><th class="num">USD</th><th class="num">PH earned</th>${p ? '<th>Payment</th>' : ''}</tr></thead><tbody>
+      <th class="num">Total h</th><th class="num">USD</th><th class="num">PH earned</th><th>ID</th>${p ? '<th>Payment</th>' : ''}</tr></thead><tbody>
       ${sum.rows.map((r) => `<tr><td class="sticky-col"><a href="#/sessions/${r.recorder_id}?${qs({ from: filt.from, to: filt.to })}">${esc(r.name)}</a>
           <div class="muted" style="font-size:11px">${esc(r.locations.join(' · '))}</div></td>
         ${sum.dates.map((d) => `<td class="num ${r.by_date[d] ? '' : 'zero'}">${r.by_date[d] ? hrs(r.by_date[d]) : '0'}</td>`).join('')}
         <td class="num"><b>${hrs(r.hours)}</b></td><td class="num">${usd(r.usd)}</td><td class="num"><b>${php(r.php)}</b></td>
+        <td>${idLink(r, { compact: true })}</td>
         ${p ? `<td>${payCell(r)}</td>` : ''}</tr>`).join('')}
       </tbody><tfoot><tr><td class="sticky-col">Total</td>${sum.dates.map((d) => `<td class="num">${hrs(T.by_date[d])}</td>`).join('')}
-        <td class="num">${hrs(T.hours)}</td><td class="num">${usd(T.usd)}</td><td class="num">${php(T.php)}</td>${p ? '<td></td>' : ''}</tr></tfoot></table>`;
+        <td class="num">${hrs(T.hours)}</td><td class="num">${usd(T.usd)}</td><td class="num">${php(T.php)}</td><td></td>${p ? '<td></td>' : ''}</tr></tfoot></table>`;
   };
   const payCell = (r) => {
     const pm = r.payment;
@@ -548,31 +549,45 @@ async function period(id = '') {
 }
 
 // ---------- Recorders ----------
+/** Only Google Drive/Docs links are rendered as links. */
+const driveLink = (u) => (/^https:\/\/(drive|docs)\.google\.com\//.test(u || '') ? u : null);
+
+/** "View ID" button that opens the Drive file; Google Drive sharing decides who can actually see it. */
+function idLink(r, { compact = false } = {}) {
+  const url = driveLink(r.id_document_url);
+  if (!url) return `<span class="pill warn">${compact ? 'No ID' : 'No ID on file'}</span>`;
+  return `<a class="btn ghost id-btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer"
+    title="${esc(r.id_document || 'ID')} — opens in Google Drive">🪪 ${compact ? 'ID' : 'View ID'}</a>`;
+}
+
 function contractPill(r) {
-  if (!r.contract) return '<span class="pill warn">No contract</span>';
+  if (!r.contract && !r.contract_url) return '<span class="pill warn">No contract</span>';
   const hard = (r.contract_hard_copy || '').toLowerCase();
-  const link = /^https?:\/\//.test(r.contract) ? ` <a href="${esc(r.contract)}" target="_blank" rel="noopener">open</a>` : '';
-  return `<span class="pill ok" title="${esc(r.contract)}">Signed</span>${link}${hard ? ` <span class="pill ${hard === 'done' ? 'ok' : 'warn'}">hard copy: ${esc(r.contract_hard_copy)}</span>` : ''}`;
+  const url = driveLink(r.contract_url) || driveLink(r.contract);
+  const link = url ? ` <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">open</a>` : '';
+  return `<span class="pill ok" title="${esc(r.contract || 'Signed contract')}">Signed</span>${link}${hard ? ` <span class="pill ${hard === 'done' ? 'ok' : 'warn'}">hard copy: ${esc(r.contract_hard_copy)}</span>` : ''}`;
 }
 
 async function recorders() {
   const [{ recorders: list }, s] = await Promise.all([lookups(true), api('/settings')]);
   const admin = me.role === 'admin';
-  const noContract = list.filter((r) => !r.contract).length;
+  const noContract = list.filter((r) => !r.contract && !r.contract_url).length;
+  const noId = list.filter((r) => !r.id_document_url).length;
   view.innerHTML = `
     <div class="head"><div><h1>Recorders</h1><p>${list.length} people · ${s.recorder_synced_at ? `profiles synced from Google Sheet ${new Date(s.recorder_synced_at).toLocaleString()}` : 'profiles not synced yet'}</p></div>
       <div class="head-actions">${admin ? '<button id="rc-sync">⟳ Sync from Google Sheet</button>' : ''}<button class="primary" id="rc-new">+ Add recorder</button></div></div>
     <div class="toolbar">
       <label class="f" style="flex:1;min-width:180px">Search<input id="rc-q" placeholder="Name, email, contact, account…"></label>
-      <label class="f">Show<select id="rc-f"><option value="">All recorders</option><option value="nocontract">No signed contract (${noContract})</option>
+      <label class="f">Show<select id="rc-f"><option value="">All recorders</option><option value="noid">No ID on file (${noId})</option><option value="nocontract">No signed contract (${noContract})</option>
         <option value="nohard">Hard copy not yet</option><option value="inactive">Inactive</option></select></label>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Contact</th><th>Payment</th><th>Contract</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Contact</th><th>Payment</th><th>ID</th><th>Contract</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
     <tbody id="rc-body"></tbody></table></div>`;
   const draw = () => {
     const ql = $('#rc-q').value.toLowerCase(), f = $('#rc-f').value;
     const rows = list.filter((r) => {
-      if (f === 'nocontract' && r.contract) return false;
+      if (f === 'nocontract' && (r.contract || r.contract_url)) return false;
+      if (f === 'noid' && r.id_document_url) return false;
       if (f === 'nohard' && !/not/i.test(r.contract_hard_copy || '')) return false;
       if (f === 'inactive' && r.active) return false;
       return !ql || [r.name, r.aliases, r.email, r.contact, r.payout_account_no, r.address].join(' ').toLowerCase().includes(ql);
@@ -582,10 +597,11 @@ async function recorders() {
         ${r.email ? `<div class="muted" style="font-size:12px">${esc(r.email)}</div>` : ''}${r.aliases ? `<div class="muted" style="font-size:11px">aka ${esc(r.aliases)}</div>` : ''}</td>
       <td>${r.contact ? `<a href="tel:${esc(r.contact)}">${esc(r.contact)}</a>` : '<span class="muted">—</span>'}</td>
       <td>${r.payment_method ? `<span class="pill">${esc(r.payment_method)}</span> ` : ''}${maskAcct(r.payout_account_no)}</td>
+      <td>${idLink(r)}</td>
       <td>${contractPill(r)}</td>
       <td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td><td>${fmtDate(r.last_date)}</td>
       <td class="num"><a class="btn ghost" href="#/sessions/${r.id}">Sessions</a><button class="ghost" data-edit="${r.id}">Edit</button><button class="ghost" data-merge="${r.id}">Merge…</button></td></tr>`).join('')
-      || '<tr><td colspan="8" class="empty">No recorders match.</td></tr>';
+      || '<tr><td colspan="9" class="empty">No recorders match.</td></tr>';
   };
   $('#rc-q').oninput = draw;
   $('#rc-f').onchange = draw;
@@ -625,8 +641,10 @@ async function recorders() {
       { name: 'payout_account_no', label: 'Account no.', value: r.payout_account_no || '' },
       { name: 'payout_account_name', label: 'Account name (if different)', value: r.payout_account_name || '' },
       { name: 'app_account', label: 'App account no.', value: r.app_account || '' },
-      { name: 'id_document', label: 'ID on file', value: r.id_document || '' },
-      { name: 'contract', label: 'Signed contract', value: r.contract || '' },
+      { name: 'id_document', label: 'ID on file (name)', value: r.id_document || '' },
+      { name: 'id_document_url', label: 'ID link (Google Drive)', type: 'url', value: r.id_document_url || '' },
+      { name: 'contract', label: 'Signed contract (name)', value: r.contract || '' },
+      { name: 'contract_url', label: 'Contract link (Google Drive/Docs)', type: 'url', value: r.contract_url || '' },
       { name: 'contract_hard_copy', label: 'Contract hard copy', type: 'select', options: [['', '—'], ['done', 'done'], ['not yet', 'not yet']], value: (r.contract_hard_copy || '').toLowerCase() },
       { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Inactive']], value: String(r.active) },
       { name: 'notes', label: 'Notes', type: 'textarea', value: r.notes || '', full: true },
@@ -913,6 +931,7 @@ async function myHours() {
         <dt>Email</dt><dd>${esc(p.email || '—')}</dd>
         <dt>Contact</dt><dd>${esc(p.contact || '—')}</dd>
         <dt>Payment</dt><dd>${esc(p.payment_method || '—')} ${maskAcct(p.payout_account_no)}</dd>
+        <dt>ID</dt><dd>${idLink(p)}</dd>
         <dt>Contract</dt><dd>${contractPill(p)}</dd>
       </dl><p class="muted" style="font-size:12px;margin:12px 0 0">Something wrong? Tell the studio admin so they can update it.</p></div>
     </div>

@@ -3,7 +3,7 @@ import express from 'express';
 import { pool, q, one, tx, migrate, getSettings, resolveRecorder, resolveLocation, addAlias } from './db.js';
 import { requireUser, requireAdmin, login, signup, setSessionCookie, clearSessionCookie, hashPassword, PUBLIC_USER } from './auth.js';
 import { router as businessRoutes } from './businesses.js';
-import { router as recorderSyncRoutes } from './recorders-sync.js';
+import { router as recorderSyncRoutes, driveUrl } from './recorders-sync.js';
 
 export const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -177,7 +177,7 @@ async function recorderForEmail(email) {
 app.get('/api/me/recorder', wrap(async (req) => {
   const rid = await recorderForEmail(req.user.email);
   const [profile, sessions, periods] = await Promise.all([
-    one(`SELECT id, name, email, contact, payment_method, payout_account_no, contract, contract_hard_copy FROM recorders WHERE id = $1`, [rid]),
+    one(`SELECT id, name, email, contact, payment_method, payout_account_no, contract, contract_url, contract_hard_copy, id_document, id_document_url FROM recorders WHERE id = $1`, [rid]),
     q(`${SESSION_SELECT} WHERE s.recorder_id = $1 ORDER BY s.date DESC`, [rid]),
     q(`SELECT p.id, p.name, p.start_date, p.end_date, p.status,
               COALESCE(SUM(s.hours),0) AS hours, COALESCE(SUM(${PHP}),0) AS php,
@@ -224,9 +224,13 @@ app.post('/api/recorders', wrap(async (req) => {
 }));
 
 app.put('/api/recorders/:id', wrap(async (req) => {
+  // Document links must be Google Drive/Docs URLs (they're rendered as links for admins).
+  for (const k of ['id_document_url', 'contract_url']) {
+    if (req.body[k] && !driveUrl(req.body[k])) throw fail('Document links must be Google Drive or Google Docs links (https://drive.google.com/…)');
+  }
   await updateFields('recorders', req.params.id, req.body,
     ['name', 'app_account', 'payout_account_no', 'payout_account_name', 'payment_method', 'contact', 'email', 'address',
-      'id_document', 'contract', 'contract_hard_copy', 'active', 'notes']);
+      'id_document', 'id_document_url', 'contract', 'contract_url', 'contract_hard_copy', 'active', 'notes']);
   return one('SELECT * FROM recorders WHERE id = $1', [Number(req.params.id)]);
 }));
 
@@ -363,10 +367,10 @@ async function buildSummary({ from, to, category, location_id, period_id }) {
   const p = params();
   const where = sessionFilters({ from, to, category, location_id }, p);
   const rows = await q(`
-    SELECT s.recorder_id, r.name, r.payout_account_no, s.date, SUM(s.hours) AS hours, SUM(${USD}) AS usd, SUM(${PHP}) AS php,
+    SELECT s.recorder_id, r.name, r.payout_account_no, r.id_document, r.id_document_url, s.date, SUM(s.hours) AS hours, SUM(${USD}) AS usd, SUM(${PHP}) AS php,
            string_agg(DISTINCT l.name, ',') AS locations
     FROM sessions s JOIN recorders r ON r.id = s.recorder_id LEFT JOIN locations l ON l.id = s.location_id
-    ${where} GROUP BY s.recorder_id, r.name, r.payout_account_no, s.date ORDER BY r.name`, p.list);
+    ${where} GROUP BY s.recorder_id, r.name, r.payout_account_no, r.id_document, r.id_document_url, s.date ORDER BY r.name`, p.list);
 
   const dates = [...new Set(rows.map((r) => r.date))].sort();
   const payments = period_id
@@ -375,7 +379,7 @@ async function buildSummary({ from, to, category, location_id, period_id }) {
   const byRec = new Map();
   for (const r of rows) {
     if (!byRec.has(r.recorder_id)) {
-      byRec.set(r.recorder_id, { recorder_id: r.recorder_id, name: r.name, payout_account_no: r.payout_account_no,
+      byRec.set(r.recorder_id, { recorder_id: r.recorder_id, name: r.name, payout_account_no: r.payout_account_no, id_document: r.id_document, id_document_url: r.id_document_url,
         by_date: {}, hours: 0, usd: 0, php: 0, locations: new Set(), payment: payments[r.recorder_id] || null });
     }
     const o = byRec.get(r.recorder_id);
