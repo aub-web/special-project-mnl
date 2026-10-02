@@ -19,6 +19,7 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status >= 500 && !data.error) data.error = data.errorMessage || `Server error (${res.status})`;
   if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/signup')) {
     showLogin();
     throw new Error('Please sign in');
@@ -81,7 +82,18 @@ function showLogin() {
   draw();
 }
 async function boot() {
-  try { me = await api('/auth/me'); } catch { return; }
+  try {
+    me = await api('/auth/me');
+  } catch (e) {
+    // 401 already showed the sign-in screen; anything else means the server itself is unhappy.
+    if (!me && document.body.classList.contains('logged-out') && !view.querySelector('.auth')) {
+      view.innerHTML = `<div class="card auth"><div class="brand"><span class="name"><span class="dot"></span>Studio Project Manila</span></div>
+        <p class="msg err">The server isn't responding properly: ${esc(e.message)}</p>
+        <p class="hint">If you just deployed, check the Netlify environment variables (DATABASE_URL, SESSION_SECRET) and redeploy.</p>
+        <button class="primary" style="justify-content:center" onclick="location.reload()">Try again</button></div>`;
+    }
+    return;
+  }
   document.body.classList.remove('logged-out');
   $('#nav-users').hidden = me.role !== 'admin';
   $('#me-name').textContent = me.name;

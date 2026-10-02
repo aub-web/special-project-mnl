@@ -3,7 +3,7 @@ import pg from 'pg';
 // Netlify DB sets NETLIFY_DATABASE_URL; DATABASE_URL works for any other Postgres.
 const connectionString = process.env.NETLIFY_DATABASE_URL || process.env.DATABASE_URL;
 if (!connectionString) {
-  throw new Error('No database configured. Set NETLIFY_DATABASE_URL (or DATABASE_URL) — see README.');
+  throw new Error('No database configured. Set DATABASE_URL (or NETLIFY_DATABASE_URL) — see README.');
 }
 
 // Serverless functions each hold their own pool, so keep it small.
