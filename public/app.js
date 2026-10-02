@@ -892,6 +892,7 @@ async function settings() {
         <h2>Rates & sources</h2>
         <label class="f">Recording rate (₱ per hour)<input name="rate_php" type="number" step="0.01" value="${s.rate_php}"></label>
         <label class="f">Business rate (PHP per shift × scene)<input name="business_rate_php" type="number" step="0.01" value="${s.business_rate_php}"></label>
+        <label class="f">Hours Google Sheet — Studio Payout Summary (ID or link)<input name="payout_sheet_id" value="${esc(s.payout_sheet_id)}"></label>
         <label class="f">Business Google Sheet (ID or link)<input name="business_sheet_id" value="${esc(s.business_sheet_id)}"></label>
         <label class="f">Recorder Google Sheet (ID or link)<input name="recorder_sheet_id" value="${esc(s.recorder_sheet_id)}"></label>
         <label class="f">Auto-admin emails (become admin when they sign up)<input name="admin_emails" value="${esc(s.admin_emails)}"></label>
