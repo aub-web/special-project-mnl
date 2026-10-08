@@ -243,6 +243,9 @@ const maskAcct = (n) => (n ? `<button class="ghost acct" data-acct="${esc(n)}" t
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-acct]');
   if (b) { e.preventDefault(); e.stopPropagation(); b.textContent = b.dataset.acct; b.removeAttribute('data-acct'); }
+  // Links inside a clickable card (e.g. Owner ID on a business card) open on their own, not the card.
+  const o = e.target.closest('[data-open]');
+  if (o && driveLink(o.dataset.open)) { e.preventDefault(); e.stopPropagation(); window.open(o.dataset.open, '_blank', 'noopener'); }
 }, true);
 
 function businessCard(b) {
@@ -250,7 +253,8 @@ function businessCard(b) {
   return `<a class="card biz" href="#/business/${b.id}">
     <div class="biz-head"><b>${esc(b.name)}</b>${b.active ? '' : ' <span class="pill">inactive</span>'}</div>
     <div class="biz-owner">${esc(b.owner_name || 'No owner on file')}</div>
-    <div class="biz-bank"><span class="pill">${esc(b.bank_name || 'No bank')}</span> ${maskAcct(b.bank_account_no)}</div>
+    <div class="biz-bank"><span class="pill">${esc(b.bank_name || 'No bank')}</span> ${maskAcct(b.bank_account_no)}
+      ${driveLink(b.owner_id_url) ? `<span class="btn ghost id-btn" data-open="${esc(b.owner_id_url)}" title="Owner's ID — opens in Google Drive">🪪 Owner ID</span>` : ''}</div>
     <div class="biz-stats">
       <div><span>Shifts hosted</span><b>${hrs(b.shifts)}</b></div>
       <div><span>Business payout</span><b>${php(b.payout)}</b></div>
@@ -925,6 +929,8 @@ function businessFields(b = {}, locs = []) {
     { name: 'bank_account_no', label: 'Account no.', value: b.bank_account_no || '' },
     { name: 'account_name', label: 'Account name', value: b.account_name || '', full: true },
     { name: 'gcash_owner', label: 'GCash owner', value: b.gcash_owner || '', full: true },
+    { name: 'owner_id_url', label: "Owner's ID link (Google Drive)", type: 'url', value: b.owner_id_url || '' },
+    { name: 'gcash_owner_id_url', label: "GCash owner's ID link", type: 'url', value: b.gcash_owner_id_url || '' },
     { name: 'location_id', label: 'Recorder location (for hours/recorders)', type: 'select', full: true,
       options: [['', '— none —'], ...locs.map((l) => [l.id, l.name])], value: b.location_id ?? '' },
     { name: 'active', label: 'Status', type: 'select', options: [['true', 'Active'], ['false', 'Inactive']], value: String(b.active ?? true) },
@@ -979,7 +985,9 @@ async function business(id) {
     <div class="grid two">
       <div class="card"><h2>Profile</h2><dl class="profile">
         ${row('Owner', esc(b.owner_name))}${row('Bank / wallet', esc(b.bank_name))}${row('Account no.', b.bank_account_no ? maskAcct(b.bank_account_no) : '')}
-        ${row('Account name', esc(b.account_name))}${row('GCash owner', esc(b.gcash_owner))}${row('Notes', esc(b.notes))}
+        ${row('Account name', esc(b.account_name))}${row('GCash owner', esc(b.gcash_owner))}
+        ${row("Owner's ID", driveLink(b.owner_id_url) ? `<a class="btn ghost id-btn" href="${esc(b.owner_id_url)}" target="_blank" rel="noopener noreferrer">🪪 View ID</a>` : '<span class="pill warn">No ID on file</span>')}
+        ${b.gcash_owner_id_url ? row("GCash owner's ID", `<a class="btn ghost id-btn" href="${esc(b.gcash_owner_id_url)}" target="_blank" rel="noopener noreferrer">🪪 View ID</a>`) : ''}${row('Notes', esc(b.notes))}
       </dl></div>
       <div class="card"><h2>Recorder activity</h2>
         ${b.recorder_log.length ? `<table><thead><tr><th>Date</th><th class="num">Recorders</th><th class="num">Hours</th><th class="num">Paid to recorders</th></tr></thead><tbody>

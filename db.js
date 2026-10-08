@@ -188,6 +188,10 @@ ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_hard_copy TEXT;   -- "do
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS id_document_url TEXT;
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_url TEXT;
 
+-- Business owner IDs (Google Drive links, e.g. from the "Business Owner's ID" folder).
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS owner_id_url TEXT;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS gcash_owner_id_url TEXT;
+
 -- Contract tag set by admins only: Done | Pending. Seeded from whether a signed contract is on file.
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_status TEXT;
 UPDATE recorders SET contract_status = CASE WHEN contract IS NOT NULL OR contract_url IS NOT NULL THEN 'Done' ELSE 'Pending' END
@@ -263,7 +267,7 @@ ON CONFLICT (key) DO NOTHING;
 
 // Bump when SCHEMA changes. The schema (with its ALTER TABLEs, which lock tables) only runs when the
 // stored version differs, so serverless cold starts don't block a running sync.
-const SCHEMA_VERSION = '2026-10-08.dedupe';
+const SCHEMA_VERSION = '2026-10-08.owner-ids';
 
 let migrated;
 /** Create/upgrade tables if needed. Cached so each cold start checks once. */

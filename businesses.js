@@ -189,13 +189,15 @@ router.get('/businesses/:id', wrap(async (req) => {
   return b;
 }));
 
-const BIZ_FIELDS = ['name', 'owner_name', 'bank_name', 'bank_account_no', 'account_name', 'gcash_owner', 'location_id', 'active', 'notes'];
+const BIZ_FIELDS = ['name', 'owner_name', 'bank_name', 'bank_account_no', 'account_name', 'gcash_owner', 'owner_id_url', 'gcash_owner_id_url', 'location_id', 'active', 'notes'];
+const driveLinkOk = (b) => ['owner_id_url', 'gcash_owner_id_url'].every((k) => !b[k] || /^https:\/\/(drive|docs)\.google\.com\//.test(b[k]));
 router.post('/businesses', wrap(async (req) => {
   if (!clean(req.body.name)) throw fail('Name is required');
   const vals = BIZ_FIELDS.map((k) => toNull(req.body[k]) ?? (k === 'active' ? true : null));
   return one(`INSERT INTO businesses (${BIZ_FIELDS.join(',')}) VALUES (${BIZ_FIELDS.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, vals);
 }));
 router.put('/businesses/:id', wrap(async (req) => {
+  if (!driveLinkOk(req.body)) throw fail('ID links must be Google Drive links');
   const f = BIZ_FIELDS.filter((k) => k in req.body);
   if (!f.length) throw fail('Nothing to update');
   await q(`UPDATE businesses SET ${f.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE id = $1`,
