@@ -6,7 +6,7 @@ import { router as businessRoutes } from './businesses.js';
 import { router as recorderSyncRoutes, driveUrl } from './recorders-sync.js';
 import { router as payoutSyncRoutes } from './payout-sync.js';
 import { router as registrationRoutes, publicRouter as registrationPublicRoutes } from './registrations.js';
-import { router as writebackRoutes, pushRecorderToSheet } from './sheet-writeback.js';
+import { router as writebackRoutes, pushRecorderToSheet, pushBusinessToSheet, writeNewSessions, pushHours, sessionInfo, inSheet, fromOtherTab, fitsSheet } from './sheet-writeback.js';
 
 export const app = express();
 app.use(express.json({ limit: '8mb' })); // room for an uploaded .xlsx (base64)
@@ -370,7 +370,9 @@ const INSERT_SESSION = `INSERT INTO sessions (recorder_id, location_id, date, ho
 app.post('/api/sessions', wrap(async (req) => {
   const v = await sessionValues(req.body, await getSettings());
   const { id } = await one(INSERT_SESSION, [...v, req.user.id]);
-  return one(`${SESSION_SELECT} WHERE s.id = $1`, [id]);
+  const sheet = await writeNewSessions([id]); // add the hours to the weekly tab of the hours sheet
+  const row = await one(`${SESSION_SELECT} WHERE s.id = $1`, [id]);
+  return { ...(hidesMoney(req) ? stripMoney(row) : row), sheet };
 }));
 
 // Daily log: one date + location, many recorders — mirrors the per-day sheets.
@@ -378,26 +380,66 @@ app.post('/api/sessions/bulk', wrap(async (req) => {
   const { date, location, category, rows = [] } = req.body;
   const filled = rows.filter((r) => (r.recorder || '').trim() && Number(r.hours) > 0);
   if (!filled.length) throw fail('Add at least one recorder with hours');
-  return tx(async (c) => {
+  const ids = await tx(async (c) => {
     const defaults = await getSettings(c);
-    for (const r of filled) await q(INSERT_SESSION, [...(await sessionValues({ ...r, date, location, category }, defaults, c)), req.user.id], c);
-    return { inserted: filled.length };
+    const out = [];
+    for (const r of filled) out.push((await one(INSERT_SESSION, [...(await sessionValues({ ...r, date, location, category }, defaults, c)), req.user.id], c)).id);
+    return out;
   });
+  // After saving: add the hours to the weekly tab of the hours sheet (a sheet problem never loses the entry).
+  return { inserted: ids.length, sheet: await writeNewSessions(ids) };
 }));
+
+/** Sessions from the old daily / HOME / OT tabs can only be changed in the sheet (the sync would undo app edits). */
+function guardSheetTab(info) {
+  if (fromOtherTab(info.source)) throw fail(`This entry comes from the "${info.source.trim()}" tab of the hours sheet — change it there.`, 409);
+}
+/** Apply hour changes to the sheet; throws (so nothing changes in the app) if the sheet can't be updated. */
+async function sheetApply(items) {
+  const res = await pushHours(items);
+  if (res.skipped) throw fail('This entry is in the hours sheet. Set up sheet write-back (Settings) or change it in the sheet.', 409);
+  if (!res.ok) throw fail(`Couldn't update the hours sheet, so nothing was changed: ${res.error}`, 502);
+  const bad = (res.results || []).find((x) => !x.ok);
+  if (bad) throw fail(`Couldn't update the hours sheet, so nothing was changed: ${bad.error}`, 502);
+  return res.results;
+}
 
 app.put('/api/sessions/:id', wrap(async (req) => {
   const cur = await editableSession(req);
+  const [before] = await sessionInfo([cur.id]);
+  guardSheetTab(before);
   const body = { ...req.body };
   if (req.user.role !== 'admin') delete body.rate_php; // only admins change pay rates
   const v = await sessionValues({ ...cur, ...body }, cur);
-  await q(`UPDATE sessions SET recorder_id=$1, location_id=$2, date=$3, hours=$4, category=$5, shift=$6, rate_php=$7, notes=$8 WHERE id=$9`,
-    [...v, cur.id]);
+  const after = {
+    id: cur.id, date: v[2], hours: v[3], category: v[4],
+    name: (await one('SELECT name FROM recorders WHERE id = $1', [v[0]])).name,
+    location: v[1] ? (await one('SELECT name FROM locations WHERE id = $1', [v[1]])).name : null,
+  };
+  let source = cur.source, sheet = null;
+  if (inSheet(before.source)) {
+    // Move the hours in the sheet: same cell → add the difference; different cell → take out old, put in new.
+    const same = before.date === after.date && before.name === after.name && (before.location || '') === (after.location || '') && fitsSheet(after);
+    const items = same
+      ? (after.hours !== before.hours ? [{ id: cur.id, date: after.date, name: after.name, location: after.location, delta: after.hours - before.hours }] : [])
+      : [{ id: 'old', date: before.date, name: before.name, location: before.location, delta: -before.hours },
+         ...(fitsSheet(after) ? [{ id: cur.id, date: after.date, name: after.name, location: after.location, delta: after.hours }] : [])];
+    const results = items.length ? await sheetApply(items) : [];
+    source = fitsSheet(after) ? (results.find((x) => x.id === cur.id)?.tab || before.source) : 'web';
+    sheet = { sent: items.length ? 1 : 0, notSent: [] };
+  }
+  await q(`UPDATE sessions SET recorder_id=$1, location_id=$2, date=$3, hours=$4, category=$5, shift=$6, rate_php=$7, notes=$8, source=$10 WHERE id=$9`,
+    [...v, cur.id, source]);
+  if (!inSheet(before.source)) sheet = await writeNewSessions([cur.id]); // app-only entry: add it to the sheet now
   const row = await one(`${SESSION_SELECT} WHERE s.id = $1`, [cur.id]);
-  return hidesMoney(req) ? stripMoney(row) : row;
+  return { ...(hidesMoney(req) ? stripMoney(row) : row), sheet };
 }));
 
 app.delete('/api/sessions/:id', wrap(async (req) => {
   await editableSession(req);
+  const [info] = await sessionInfo([Number(req.params.id)]);
+  guardSheetTab(info);
+  if (inSheet(info.source)) await sheetApply([{ id: info.id, date: info.date, name: info.name, location: info.location, delta: -info.hours }]);
   await q('DELETE FROM sessions WHERE id = $1', [Number(req.params.id)]);
   return { ok: true };
 }));
@@ -512,7 +554,7 @@ app.delete('/api/followups/:id', wrap(async (req) => {
 }));
 
 // ---------- Dashboard ----------
-app.get('/api/dashboard', wrap(async () => {
+app.get('/api/dashboard', wrap(async (req) => {
   const [totals, byWeek, byCategory, byLocation, topRecorders, fu, pr, bizTotals] = await Promise.all([
     one(`SELECT COUNT(*)::int sessions, COALESCE(SUM(hours),0) hours, COALESCE(SUM(${PHP}),0) php,
       COUNT(DISTINCT recorder_id)::int recorders, COUNT(DISTINCT location_id)::int locations, MIN(date) first_date, MAX(date) last_date FROM sessions s`),
@@ -529,7 +571,9 @@ app.get('/api/dashboard', wrap(async () => {
     one(`SELECT (SELECT COUNT(*)::int FROM businesses WHERE active) businesses,
                 COALESCE(SUM(shifts),0) shifts, COALESCE(SUM(shifts * scenes * rate_php),0) payout FROM business_shifts`),
   ]);
-  return { totals, byWeek, byCategory, byLocation, topRecorders, openFollowups: fu.n, openPeriods: pr.n, bizTotals };
+  // Recorder hours (and the pay derived from them) are for admins and set directors only.
+  if (req.user.role === 'sdr') return { bizTotals, totals: { first_date: totals.first_date, last_date: totals.last_date }, recorderData: false };
+  return { totals, byWeek, byCategory, byLocation, topRecorders, openFollowups: fu.n, openPeriods: pr.n, bizTotals, recorderData: true };
 }));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));

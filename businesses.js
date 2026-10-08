@@ -3,6 +3,7 @@ import express from 'express';
 import * as XLSX from 'xlsx';
 import { q, one, tx, getSettings } from './db.js';
 import { requireAdmin } from './auth.js';
+import { pushBusinessToSheet } from './sheet-writeback.js';
 
 export const router = express.Router();
 
@@ -198,8 +199,18 @@ const BUSINESS_LIST = `
                             MIN(s.date) first_session, MAX(s.date) last_session
                      FROM sessions s WHERE s.location_id = biz.location_id) rs ON TRUE`;
 
-router.get('/businesses', wrap(async () => ({
-  businesses: await q(`${BUSINESS_LIST} ORDER BY biz.active DESC, GREATEST(bs.last_date, rs.last_session) DESC NULLS LAST, biz.name`),
+// Recorder hours and the pay derived from them are for admins and set directors only — not SDRs.
+const RECORDER_FIELDS = ['recorder_hours', 'recorder_php', 'first_session', 'last_session'];
+const forRole = (req, b) => {
+  if (req.user.role !== 'sdr') return b;
+  for (const k of RECORDER_FIELDS) delete b[k];
+  if (b.recorder_log) b.recorder_log = [];
+  if (b.team) b.team = b.team.map(({ hours, last_date, ...rest }) => rest);
+  return b;
+};
+
+router.get('/businesses', wrap(async (req) => ({
+  businesses: (await q(`${BUSINESS_LIST} ORDER BY biz.active DESC, GREATEST(bs.last_date, rs.last_session) DESC NULLS LAST, biz.name`)).map((b) => forRole(req, b)),
   synced_at: (await getSettings()).business_synced_at || null,
 })));
 
@@ -222,7 +233,7 @@ router.get('/businesses/:id', wrap(async (req) => {
           UNION ALL SELECT DISTINCT recorder_id, FALSE FROM sessions WHERE $2::int IS NOT NULL AND location_id = $2) t
     JOIN recorders r ON r.id = t.recorder_id
     GROUP BY r.id ORDER BY bool_or(t.assigned) DESC, r.name`, [b.id, b.location_id]);
-  return b;
+  return forRole(req, b);
 }));
 
 // Add a recorder to a business: an existing one (recorder_id) or a new one by name.
@@ -260,15 +271,19 @@ router.post('/businesses', wrap(async (req) => {
     if (req.body[k] !== undefined && req.body[k] !== '' && !(Number(req.body[k]) >= 0)) throw fail('Scene and payout must be numbers');
   }
   const vals = BIZ_FIELDS.map((k) => (['default_scenes', 'rate_php'].includes(k) ? numOrNull(req.body[k]) : toNull(req.body[k]) ?? (k === 'active' ? true : null)));
-  return one(`INSERT INTO businesses (${BIZ_FIELDS.join(',')}) VALUES (${BIZ_FIELDS.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, vals);
+  const b = await one(`INSERT INTO businesses (${BIZ_FIELDS.join(',')}) VALUES (${BIZ_FIELDS.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING *`, vals);
+  return { ...b, sheet: await pushBusinessToSheet(b.id) }; // add it to the Business Profile tab too
 }));
 router.put('/businesses/:id', wrap(async (req) => {
   if (!driveLinkOk(req.body)) throw fail('ID links must be Google Drive links');
+  const before = await one('SELECT name FROM businesses WHERE id = $1', [Number(req.params.id)]);
   const f = BIZ_FIELDS.filter((k) => k in req.body);
   if (!f.length) throw fail('Nothing to update');
-  await q(`UPDATE businesses SET ${f.map((k, i) => `${k} = ${i + 2}`).join(', ')} WHERE id = $1`,
+  await q(`UPDATE businesses SET ${f.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE id = $1`,
     [Number(req.params.id), ...f.map((k) => (['default_scenes', 'rate_php'].includes(k) ? numOrNull(req.body[k]) : toNull(req.body[k])))]);
-  return { ok: true };
+  // Keep the Business Profile tab in step (or the 10-minute sync would undo these edits).
+  const profile = ['name', 'address', 'owner_name', 'bank_name', 'bank_account_no', 'status'];
+  return { ok: true, sheet: profile.some((k) => k in req.body) ? await pushBusinessToSheet(Number(req.params.id), { previousName: before?.name }) : null };
 }));
 router.delete('/businesses/:id', requireAdmin, wrap(async (req) => {
   await q('DELETE FROM businesses WHERE id = $1', [Number(req.params.id)]);

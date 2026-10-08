@@ -258,7 +258,7 @@ function businessCard(b) {
     <div class="biz-stats">
       <div><span>Shifts hosted</span><b>${hrs(b.shifts)}</b></div>
       <div><span>Business payout</span><b>${php(b.payout)}</b></div>
-      <div><span>Recorder hours</span><b>${hrs(b.recorder_hours)}</b></div>
+      ${b.recorder_hours !== undefined ? `<div><span>Recorder hours</span><b>${hrs(b.recorder_hours)}</b></div>` : ''}
       <div><span>Recorders</span><b>${b.recorders}</b></div>
     </div>
     <div class="biz-foot muted">${b.location ? `📍 ${esc(b.location)}` : '<span class="pill warn">No location linked</span>'} · last active ${fmtDate(lastActive)}</div>
@@ -268,27 +268,32 @@ function businessCard(b) {
 async function dashboard() {
   const [d, biz] = await Promise.all([api('/dashboard'), api('/businesses')]);
   const t = d.totals, bt = d.bizTotals;
-  const weeks = d.byWeek.slice(-10);
+  const rec = d.recorderData; // false for SDRs: recorder hours/pay are admin + set director only
+  const weeks = rec ? d.byWeek.slice(-10) : [];
   const maxW = Math.max(1, ...weeks.map((w) => w.hours));
-  const maxL = Math.max(1, ...d.byLocation.map((l) => l.hours));
+  const maxL = Math.max(1, ...(rec ? d.byLocation : []).map((l) => l.hours));
+  // Businesses whose engagement is finished (Status "Finish" in the sheet) stay on the Businesses page only.
+  const shown = biz.businesses.filter((b) => b.active && !/finish/i.test(b.status || ''));
+  const finished = biz.businesses.filter((b) => b.active && /finish/i.test(b.status || '')).length;
   view.innerHTML = `
     <div class="head"><div><h1>Dashboard</h1><p>${fmtDate(t.first_date, { month: 'short', day: 'numeric', year: 'numeric' })} – ${fmtDate(t.last_date, { month: 'short', day: 'numeric', year: 'numeric' })}</p></div>
       ${canSee('log') ? '<a class="btn primary" href="#/log">+ Log hours</a>' : ''}</div>
     <div class="grid kpis">
-      <div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(t.hours)}</div><div class="sub">${t.sessions} sessions</div></div>
-      <div class="card kpi"><div class="label">Recorder payout</div><div class="value">${php(t.php)}</div></div>
+      ${rec ? `<div class="card kpi"><div class="label">Hours recorded</div><div class="value">${hrs(t.hours)}</div><div class="sub">${t.sessions} sessions</div></div>
+      <div class="card kpi"><div class="label">Recorder payout</div><div class="value">${php(t.php)}</div></div>` : ''}
       <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(bt.payout)}</div><div class="sub">${hrs(bt.shifts)} shifts · ${bt.businesses} businesses</div></div>
-      <div class="card kpi"><div class="label">Recorders</div><div class="value">${t.recorders}</div><div class="sub">across ${t.locations} locations</div></div>
+      ${rec ? `<div class="card kpi"><div class="label">Recorders</div><div class="value">${t.recorders}</div><div class="sub">across ${t.locations} locations</div></div>` : ''}
       ${isAdmin() ? `<div class="card kpi"><div class="label">Needs attention</div><div class="value">${d.openFollowups}</div>
         <div class="sub"><a href="#/followups">follow-ups</a> · ${d.openPeriods} <a href="#/periods">open period(s)</a></div></div>` : ''}
     </div>
     <div class="section-head"><h2>Businesses ${canSee('businesses') ? '<button class="primary" id="db-add-biz" style="margin-left:8px;padding:4px 10px;font-size:13px">+ Add business</button>' : ''}</h2>
-      <span class="muted">${biz.synced_at ? `Synced from Google Sheet ${new Date(biz.synced_at).toLocaleString()}` : 'Not synced yet'} · <a href="#/businesses">Manage</a></span></div>
-    ${biz.businesses.length
-      ? `<div class="grid biz-grid">${biz.businesses.filter((b) => b.active).map(businessCard).join('')}</div>`
+      <span class="muted">${finished ? `${finished} finished not shown · ` : ''}${biz.synced_at ? `Synced from Google Sheet ${new Date(biz.synced_at).toLocaleString()}` : 'Not synced yet'} · <a href="#/businesses">Manage</a></span></div>
+    ${shown.length
+      ? `<div class="grid biz-grid">${shown.map(businessCard).join('')}</div>`
+      : biz.businesses.length ? '<div class="card empty">No ongoing businesses. Finished ones are on the <a href="#/businesses">Businesses</a> page.</div>'
       : `<div class="card empty">No businesses yet. ${me.role === 'admin' ? 'Open <a href="#/businesses">Businesses</a> and press <b>Sync from Google Sheet</b>.' : 'Ask an admin to sync them from the Google Sheet.'}</div>`}
     <div style="height:14px"></div>
-    <div class="grid two">
+    ${rec ? `<div class="grid two">
       <div class="card"><h2>Hours per week</h2>
         <div class="chart">${weeks.map((w) => `<div class="col" title="${hrs(w.hours)} h · ${php(w.php)} · ${w.recorders} recorders">
           <span class="v">${hrs(Math.round(w.hours))}</span><div class="b" style="height:${(w.hours / maxW) * 100}%"></div><small>${fmtDate(w.week)}</small></div>`).join('')}</div>
@@ -302,7 +307,7 @@ async function dashboard() {
     <div class="card" style="margin-top:14px"><h2>Top recorders</h2>
       <table><thead><tr><th>Name</th><th class="num">Days</th><th class="num">Hours</th><th class="num">Earned</th></tr></thead><tbody>
       ${d.topRecorders.map((r) => `<tr><td>${canSee('sessions') ? `<a href="#/sessions/${r.id}">${esc(r.name)}</a>` : esc(r.name)}</td><td class="num">${r.days}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
-      </tbody></table></div>`;
+      </tbody></table></div>` : ''}`;
   $('#db-add-biz')?.addEventListener('click', addBusiness);
 }
 
@@ -354,7 +359,7 @@ async function log() {
       const r = await api('/sessions/bulk', { method: 'POST', body: {
         date: $('#lg-date').value, location: $('#lg-loc').value, category: $('#lg-cat').value, rows: state.rows,
       } });
-      toast(`Saved ${r.inserted} session(s)`);
+      toast(`Saved ${r.inserted} session(s)${hoursNote(r.sheet)}`); hoursWarn(r.sheet);
       await lookups(true);
       location.hash = `#/sessions?from=${$('#lg-date').value}`;
     } catch (e) { toast(e.message, true); }
@@ -366,6 +371,19 @@ async function log() {
 function sheetNote(sheet) {
   if (!sheet || sheet.skipped) return '';
   return sheet.ok ? ` · ${sheet.updated ? 'updated' : 'added to'} the recorder sheet (row ${sheet.row})` : '';
+}
+/** After saving hours: what happened in the hours sheet (quiet when write-back isn't set up). */
+function hoursNote(sheet) {
+  if (!sheet || sheet.skipped || sheet.error || !sheet.sent) return '';
+  return ` · added to the hours sheet${sheet.created_tab ? ` (new tab "${sheet.created_tab}")` : ''}`;
+}
+function hoursWarn(sheet) {
+  if (!sheet || sheet.skipped) return;
+  if (sheet.error) return toast(`Saved in the app, but the hours sheet wasn't updated: ${sheet.error}`, true);
+  if (sheet.notSent?.length) {
+    const first = sheet.notSent[0];
+    toast(`Saved. ${sheet.notSent.length} entr${sheet.notSent.length === 1 ? 'y stays' : 'ies stay'} in the app only (${first.reason})`, true);
+  }
 }
 function sheetWarn(sheet) {
   if (sheet && !sheet.ok && !sheet.skipped) toast(`Saved in the app, but the recorder sheet wasn't updated: ${sheet.error}`, true);
@@ -385,13 +403,26 @@ async function hoursSyncBar() {
         ? `<span class="pill ${auto.ok ? 'ok' : 'warn'}">Auto-sync every 10 min</span> <span class="${auto.ok ? 'muted' : ''}" style="${auto.ok ? '' : 'color:var(--warn)'}">${esc(auto.message)} · checked ${new Date(auto.at).toLocaleTimeString()}</span>`
         : '<span class="muted">Auto-sync every 10 min starts after the next deploy.</span>'}</div></div>
     <div class="head-actions">
+      <button id="hs-push" hidden>⬆ Send app hours to the sheet</button>
       <button id="hs-sync">⟳ Sync from Google Sheet</button>
       <label class="btn" for="hs-file">⬆ Upload .xlsx</label><input type="file" id="hs-file" accept=".xlsx" hidden>
     </div></div>`;
 }
 function bindHoursSync() {
-  const btn = $('#hs-sync'), file = $('#hs-file');
+  const btn = $('#hs-sync'), file = $('#hs-file'), push = $('#hs-push');
   if (!btn) return;
+  // Hours logged in the app that aren't in the sheet yet (e.g. logged before write-back was set up).
+  api('/payout/pending').then(({ n }) => { if (n) { push.hidden = false; push.textContent = `⬆ Send ${n} app entr${n === 1 ? 'y' : 'ies'} to the sheet`; } }).catch(() => {});
+  push.onclick = async () => {
+    push.disabled = true; push.textContent = 'Sending…';
+    try {
+      const r = await api('/payout/push-pending', { method: 'POST' });
+      if (r.skipped) toast('Set up sheet write-back first (Settings → Write app changes into your Google Sheets).', true);
+      else if (r.error) toast(r.error, true);
+      else { toast(`Added ${r.sent} entr${r.sent === 1 ? 'y' : 'ies'} to the hours sheet${r.created_tab ? ` (new tab "${r.created_tab}")` : ''}`); hoursWarn({ notSent: r.notSent }); }
+      render();
+    } catch (e) { toast(e.message, true); push.disabled = false; }
+  };
   const done = async (r) => {
     cache.settings = null;
     const list = (items, cls) => items.length
@@ -465,8 +496,9 @@ async function sessions(recorderId = '') {
     const s = data.find((x) => String(x.id) === id);
     if (e.target.dataset.del) {
       if (!confirm(`Delete ${s.recorder} · ${s.date} · ${s.hours} h?`)) return;
-      await api('/sessions/' + id, { method: 'DELETE' });
-      toast('Deleted'); return load();
+      try { await api('/sessions/' + id, { method: 'DELETE' }); toast(/summary/i.test(s.source || '') ? 'Deleted · removed from the hours sheet' : 'Deleted'); }
+      catch (err) { toast(err.message, true); }
+      return load();
     }
     const v = await modal({ title: 'Edit session', fields: [
       { name: 'recorder', label: 'Recorder', value: s.recorder, list: 'dl-recorders', required: true, full: true },
@@ -482,8 +514,8 @@ async function sessions(recorderId = '') {
     ] });
     if (!v) return;
     try {
-      await api('/sessions/' + id, { method: 'PUT', body: { ...v, recorder_id: null, location_id: null } });
-      toast('Saved'); load();
+      const res = await api('/sessions/' + id, { method: 'PUT', body: { ...v, recorder_id: null, location_id: null } });
+      toast('Saved' + (res.sheet?.sent ? ' · hours sheet updated' : '')); hoursWarn(res.sheet); load();
     } catch (err) { toast(err.message, true); }
   });
   load();
@@ -1009,11 +1041,11 @@ async function business(id) {
       <div class="head-actions"><button id="bz-edit">Edit profile</button><button id="bz-add-rec">+ Add recorder</button><button class="primary" id="bz-shift">+ Add shift</button></div></div>
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(b.payout)}</div><div class="sub">${hrs(b.shifts)} shifts</div></div>
-      <div class="card kpi"><div class="label">Recorder hours</div><div class="value">${hrs(b.recorder_hours)}</div><div class="sub">${php(b.recorder_php)} to recorders</div></div>
+      ${b.recorder_hours !== undefined ? `<div class="card kpi"><div class="label">Recorder hours</div><div class="value">${hrs(b.recorder_hours)}</div><div class="sub">${php(b.recorder_php)} to recorders</div></div>` : ''}
       <div class="card kpi"><div class="label">Recorders</div><div class="value">${b.recorders}</div></div>
       <div class="card kpi"><div class="label">Active</div><div class="value" style="font-size:16px">${fmtDate(b.first_date || b.first_session)} – ${fmtDate([b.last_date, b.last_session].filter(Boolean).sort().at(-1))}</div></div>
     </div>
-    <div class="grid two">
+    <div class="grid ${b.recorder_hours !== undefined ? 'two' : ''}">
       <div class="card"><h2>Profile</h2><dl class="profile">
         ${row('Address', esc(b.address))}${row('Owner', esc(b.owner_name))}${row('Bank', esc(b.bank_name))}${row('Bank account', b.bank_account_no ? maskAcct(b.bank_account_no) : '')}
         ${row('Scene', b.default_scenes != null ? hrs(b.default_scenes) + ' per shift' : '')}${row('Payout', b.rate_php != null ? php(b.rate_php) + ' per shift × scene' : '')}
@@ -1022,17 +1054,17 @@ async function business(id) {
         ${row("Owner's ID", driveLink(b.owner_id_url) ? `<a class="btn ghost id-btn" href="${esc(b.owner_id_url)}" target="_blank" rel="noopener noreferrer">🪪 View ID</a>` : '<span class="pill warn">No ID on file</span>')}
         ${b.gcash_owner_id_url ? row("GCash owner's ID", `<a class="btn ghost id-btn" href="${esc(b.gcash_owner_id_url)}" target="_blank" rel="noopener noreferrer">🪪 View ID</a>`) : ''}${row('Notes', esc(b.notes))}
       </dl></div>
-      <div class="card"><h2>Recorder activity</h2>
+      ${b.recorder_hours === undefined ? '' : `<div class="card"><h2>Recorder activity</h2>
         ${b.recorder_log.length ? `<table><thead><tr><th>Date</th><th class="num">Recorders</th><th class="num">Hours</th><th class="num">Paid to recorders</th></tr></thead><tbody>
         ${b.recorder_log.map((r) => `<tr><td>${weekday(r.date)} ${fmtDate(r.date)}</td><td class="num">${r.recorders}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
-        </tbody></table>` : '<p class="muted">No recorder sessions at the linked location.</p>'}</div>
+        </tbody></table>` : '<p class="muted">No recorder sessions at the linked location.</p>'}</div>`}
     </div>
     <div class="section-head" style="margin-top:14px"><h2>Recorders <span class="muted" style="font-weight:400">(${b.team.length})</span></h2>
       <span class="muted">Added to this business, plus anyone who logged hours at ${b.location ? esc(b.location) : 'its location'}</span></div>
-    <div class="table-wrap" style="margin-bottom:14px">${b.team.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th class="num">Hours here</th><th>Last here</th><th></th></tr></thead><tbody>
+    <div class="table-wrap" style="margin-bottom:14px">${b.team.length ? `<table><thead><tr><th>Name</th><th>Contact</th>${b.recorder_hours !== undefined ? '<th class="num">Hours here</th><th>Last here</th>' : ''}<th></th></tr></thead><tbody>
       ${b.team.map((r) => `<tr><td><b>${esc(r.name)}</b> ${r.assigned ? '<span class="pill accent" style="font-size:11px">added</span>' : '<span class="pill" style="font-size:11px">worked here</span>'}</td>
         <td>${r.contact ? `<a href="tel:${esc(r.contact)}">${esc(r.contact)}</a>` : '<span class="muted">—</span>'}</td>
-        <td class="num">${hrs(r.hours)}</td><td>${fmtDate(r.last_date)}</td>
+        ${b.recorder_hours !== undefined ? `<td class="num">${hrs(r.hours)}</td><td>${fmtDate(r.last_date)}</td>` : ''}
         <td class="num">${r.assigned ? `<button class="ghost danger" data-unassign="${r.id}">Remove</button>` : ''}</td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">No recorders yet. Use <b>+ Add recorder</b>.</div>'}</div>
     <div class="section-head" style="margin-top:14px"><h2>Shifts hosted</h2><span class="muted">Rows marked “sheet” come from the Google Sheet and update on sync</span></div>
@@ -1108,9 +1140,12 @@ async function settings() {
         <div><button class="primary">Save</button></div>
       </form>` : ''}
       ${admin ? `<div class="card grid">
-        <h2>Write new recorders into the recorder sheet</h2>
-        <p class="muted" style="margin:0;font-size:13px">When you approve a registration, or add/edit a recorder here, the app updates their row in the recorder
-          Google Sheet (or adds one). One-time setup, about 3 minutes:</p>
+        <h2>Write app changes into your Google Sheets</h2>
+        <p class="muted" style="margin:0;font-size:13px">Hours logged/edited here go into the weekly tab of the <b>hours sheet</b>; new or edited recorders into
+          the <b>recorder sheet</b>; businesses into the <b>Business Profile</b> tab. One Apps Script does all three.</p>
+        <p style="margin:0;font-size:13px"><b>Already set up?</b> To get the latest version: Copy script → paste over Code.gs → Save →
+          <b>Deploy → Manage deployments → ✏ Edit → Version: New version → Deploy</b> (the URL stays the same), then Test.</p>
+        <p class="muted" style="margin:0;font-size:13px">First time, about 3 minutes:</p>
         <ol style="margin:0;padding-left:18px;font-size:13px;display:grid;gap:4px">
           <li><button type="button" class="btn" id="wb-copy">Copy script</button> (it already includes your secret code)</li>
           <li>Open the <a href="https://docs.google.com/spreadsheets/d/${esc(String(s.recorder_sheet_id || '').match(/[\w-]{20,}/)?.[0] || '')}/edit" target="_blank" rel="noopener">recorder sheet</a>
@@ -1152,7 +1187,8 @@ async function settings() {
     };
     $('#wb-test').onclick = async () => {
       const r = await api('/sheets/test', { method: 'POST' });
-      toast(r.ok ? `Connected to "${r.sheet}" ✓` : (r.error || 'Not connected'), !r.ok);
+      if (r.ok && (r.version || 1) < 2) return toast("Connected, but it's the old script: Copy script, paste it over Code.gs, then Deploy → Manage deployments → Edit → New version.", true);
+      toast(r.ok ? `Connected to "${r.sheet}" ✓ (script v${r.version})` : (r.error || 'Not connected'), !r.ok);
     };
   }
   $('#pw-form').onsubmit = async (e) => {
