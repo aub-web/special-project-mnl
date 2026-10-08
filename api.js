@@ -218,6 +218,18 @@ app.put('/api/settings', requireAdmin, wrap(async (req) => {
 }));
 
 // ---------- Recorders ----------
+// Where a recorder works, most recent first: businesses (via the business's location or its team list),
+// SP (Naruto Robot Mount In-Lab), or other places. A location's kind can be set on the Locations page.
+const LOCATION_KIND = `COALESCE(l.kind, CASE WHEN b.id IS NOT NULL THEN 'business'
+  WHEN l.name ~* '(naruto|in-lab)' THEN 'sp' ELSE 'other' END)`;
+const WORKS_AT = `(SELECT COALESCE(json_agg(w ORDER BY w.last DESC NULLS LAST), '[]') FROM (
+    SELECT COALESCE(b.name, l.name) AS label, ${LOCATION_KIND} AS kind, MAX(ws.date) AS last
+    FROM sessions ws JOIN locations l ON l.id = ws.location_id LEFT JOIN businesses b ON b.location_id = l.id
+    WHERE ws.recorder_id = r.id AND l.name <> 'Unassigned' GROUP BY 1, 2
+    UNION ALL
+    SELECT b.name, 'business', NULL FROM business_recorders br JOIN businesses b ON b.id = br.business_id
+    WHERE br.recorder_id = r.id AND NOT EXISTS (SELECT 1 FROM sessions x WHERE x.recorder_id = r.id AND x.location_id = b.location_id)
+  ) w)`;
 app.get('/api/recorders', wrap((req) => {
   // Set directors only need names for the log form — no contact, account or pay details.
   if (hidesMoney(req)) return q('SELECT id, name, active FROM recorders ORDER BY name');
@@ -226,7 +238,8 @@ app.get('/api/recorders', wrap((req) => {
          COALESCE(SUM(${PHP}),0) AS php, MAX(s.date) AS last_date,
          (SELECT string_agg(alias, ' · ') FROM recorder_aliases a WHERE a.recorder_id = r.id) AS aliases,
          (SELECT COUNT(*)::int FROM recorder_files f WHERE f.recorder_id = r.id AND f.kind = 'id') AS id_files,
-         (SELECT COUNT(*)::int FROM recorder_files f WHERE f.recorder_id = r.id AND f.kind = 'esign') AS esign_files
+         (SELECT COUNT(*)::int FROM recorder_files f WHERE f.recorder_id = r.id AND f.kind = 'esign') AS esign_files,
+         ${WORKS_AT} AS works_at
   FROM recorders r LEFT JOIN sessions s ON s.recorder_id = r.id
   GROUP BY r.id ORDER BY r.name`);
 }));
@@ -285,7 +298,9 @@ app.post('/api/recorders/:id/merge', wrap(async (req) => {
 app.get('/api/locations', wrap((req) => {
   if (hidesMoney(req)) return q('SELECT id, name FROM locations ORDER BY name');
   return q(`
-  SELECT l.*, COUNT(s.id)::int AS sessions, COALESCE(SUM(s.hours),0) AS hours, COALESCE(SUM(${PHP}),0) AS php,
+  SELECT l.*, COALESCE(l.kind, CASE WHEN EXISTS (SELECT 1 FROM businesses b WHERE b.location_id = l.id) THEN 'business'
+           WHEN l.name ~* '(naruto|in-lab)' THEN 'sp' ELSE 'other' END) AS kind_effective,
+         COUNT(s.id)::int AS sessions, COALESCE(SUM(s.hours),0) AS hours, COALESCE(SUM(${PHP}),0) AS php,
          MIN(s.date) AS first_date, MAX(s.date) AS last_date, COUNT(DISTINCT s.recorder_id)::int AS recorders
   FROM locations l LEFT JOIN sessions s ON s.location_id = l.id
   GROUP BY l.id ORDER BY last_date DESC NULLS LAST`);
@@ -295,7 +310,8 @@ app.post('/api/locations', wrap(async (req) => {
   return one('SELECT * FROM locations WHERE id = $1', [await resolveLocation(req.body.name)]);
 }));
 app.put('/api/locations/:id', wrap(async (req) => {
-  await updateFields('locations', req.params.id, req.body, ['name', 'notes']);
+  if ('kind' in req.body && ![null, '', 'business', 'sp', 'other'].includes(req.body.kind)) throw fail('Type must be Business, SP In-Lab or Other');
+  await updateFields('locations', req.params.id, req.body, ['name', 'notes', 'kind']);
   return { ok: true };
 }));
 app.post('/api/locations/:id/merge', wrap(async (req) => {

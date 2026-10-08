@@ -294,3 +294,9 @@ button.pill { cursor: pointer; font: inherit; font-size: 12px; }
   body { display: block; background: #fff; color: #000; }
   .table-wrap { overflow: visible; box-shadow: none; }
 }
+
+/* "Works at" tags */
+.pill.wk-biz { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-size: 11px; }
+.pill.wk-sp { background: #e0ecff; color: #1d4ed8; border-color: transparent; font-size: 11px; font-weight: 600; }
+:root[data-theme="dark"] .pill.wk-sp { background: #172554; color: #93c5fd; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.wk-sp { background: #172554; color: #93c5fd; } }

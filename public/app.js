@@ -615,6 +615,17 @@ async function period(id = '') {
 }
 
 // ---------- Recorders ----------
+/** "Works at" tags: businesses (🏪), SP Naruto In-Lab (🔬), other places (grey). Most recent first. */
+const KIND_LABEL = { business: 'Business', sp: 'SP In-Lab', other: 'Other' };
+function worksAt(list = [], max = 3) {
+  if (!list.length) return '<span class="muted" style="font-size:12px">—</span>';
+  const tag = (w) => w.kind === 'business' ? `<span class="pill wk-biz" title="Business">🏪 ${esc(w.label)}</span>`
+    : w.kind === 'sp' ? `<span class="pill wk-sp" title="${esc(w.label)}">🔬 SP In-Lab</span>`
+      : `<span class="pill" title="${esc(w.label)}" style="font-size:11px">${esc(w.label)}</span>`;
+  const shown = list.slice(0, max).map(tag).join(' ');
+  return list.length > max ? `${shown} <span class="muted" style="font-size:12px" title="${esc(list.slice(max).map((w) => w.label).join(', '))}">+${list.length - max}</span>` : shown;
+}
+
 /** Contract tag: Done / Pending. Admins click it to switch; the signed copy (if linked) opens next to it. */
 function contractTag(r, admin) {
   const done = r.contract_status === 'Done';
@@ -693,9 +704,10 @@ async function recorders() {
     <div class="toolbar">
       <label class="f" style="flex:1;min-width:180px">Search<input id="rc-q" placeholder="Name, email, contact, account…"></label>
       <label class="f">Show<select id="rc-f"><option value="">All recorders</option><option value="noid">No ID on file (${noId})</option><option value="nocontract">Contract pending (${noContract})</option>
-        <option value="nohard">Hard copy not yet</option><option value="inactive">Inactive</option></select></label>
+        <option value="nohard">Hard copy not yet</option><option value="inactive">Inactive</option>
+        <option value="wk-business">Works at a business</option><option value="wk-sp">Works at SP In-Lab</option></select></label>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Contact</th><th>Payment</th><th>ID</th><th>Contract</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Works at</th><th>Contact</th><th>Payment</th><th>ID</th><th>Contract</th><th class="num">Hours</th><th class="num">Earned</th><th>Last</th><th></th></tr></thead>
     <tbody id="rc-body"></tbody></table></div>`;
   const draw = () => {
     const ql = $('#rc-q').value.toLowerCase(), f = $('#rc-f').value;
@@ -704,11 +716,14 @@ async function recorders() {
       if (f === 'noid' && (r.id_document_url || r.id_files)) return false;
       if (f === 'nohard' && !/not/i.test(r.contract_hard_copy || '')) return false;
       if (f === 'inactive' && r.active) return false;
+      if (f === 'wk-business' && !(r.works_at || []).some((w) => w.kind === 'business')) return false;
+      if (f === 'wk-sp' && !(r.works_at || []).some((w) => w.kind === 'sp')) return false;
       return !ql || [r.name, r.aliases, r.email, r.contact, r.payout_account_no, r.address].join(' ').toLowerCase().includes(ql);
     });
     $('#rc-body').innerHTML = rows.map((r) => `<tr>
       <td><b>${esc(r.name)}</b>${r.active ? '' : ' <span class="pill">inactive</span>'}
         ${r.email ? `<div class="muted" style="font-size:12px">${esc(r.email)}</div>` : ''}${r.aliases ? `<div class="muted" style="font-size:11px">aka ${esc(r.aliases)}</div>` : ''}</td>
+      <td style="min-width:160px">${worksAt(r.works_at)}</td>
       <td>${r.contact ? `<a href="tel:${esc(r.contact)}">${esc(r.contact)}</a>` : '<span class="muted">—</span>'}</td>
       <td>${r.payment_method ? `<span class="pill">${esc(r.payment_method)}</span> ` : ''}${maskAcct(r.payout_account_no)}</td>
       <td>${r.id_files || r.esign_files ? `<button class="btn ghost id-btn" data-files="${r.id}">🪪 ${r.id_files} · ✍️ ${r.esign_files}</button>` : ''}
@@ -716,7 +731,7 @@ async function recorders() {
       <td>${contractTag(r, admin)}</td>
       <td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td><td>${fmtDate(r.last_date)}</td>
       <td class="num"><a class="btn ghost" href="#/sessions/${r.id}">Sessions</a><button class="ghost" data-edit="${r.id}">Edit</button><button class="ghost" data-merge="${r.id}">Merge…</button></td></tr>`).join('')
-      || '<tr><td colspan="9" class="empty">No recorders match.</td></tr>';
+      || '<tr><td colspan="10" class="empty">No recorders match.</td></tr>';
   };
   $('#rc-q').oninput = draw;
   $('#rc-f').onchange = draw;
@@ -847,9 +862,10 @@ async function recorders() {
 async function locations() {
   const { locations: list } = await lookups(true);
   view.innerHTML = `
-    <div class="head"><div><h1>Locations</h1><p>Businesses and sites where recording happens</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Location</th><th>Active</th><th class="num">Recorders</th><th class="num">Sessions</th><th class="num">Hours</th><th class="num">Payout</th><th>Notes</th><th></th></tr></thead><tbody>
-    ${list.map((l) => `<tr><td><b>${esc(l.name)}</b></td><td>${l.first_date ? `${fmtDate(l.first_date)} – ${fmtDate(l.last_date)}` : '—'}</td>
+    <div class="head"><div><h1>Locations</h1><p>Where recording happens. <b>Type</b> decides the recorders' "Works at" tag (Business / SP In-Lab / Other).</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Location</th><th>Type</th><th>Active</th><th class="num">Recorders</th><th class="num">Sessions</th><th class="num">Hours</th><th class="num">Payout</th><th>Notes</th><th></th></tr></thead><tbody>
+    ${list.map((l) => `<tr><td><b>${esc(l.name)}</b></td>
+      <td>${worksAt([{ label: l.name, kind: l.kind_effective }])}${l.kind ? '' : ' <span class="muted" style="font-size:11px">auto</span>'}</td><td>${l.first_date ? `${fmtDate(l.first_date)} – ${fmtDate(l.last_date)}` : '—'}</td>
       <td class="num">${l.recorders}</td><td class="num">${l.sessions}</td><td class="num">${hrs(l.hours)}</td><td class="num">${php(l.php)}</td>
       <td class="muted">${esc(l.notes || '')}</td><td class="num"><a class="btn ghost" href="#/sessions?${qs({ from: l.first_date, to: l.last_date })}">Sessions</a><button class="ghost" data-edit="${l.id}">Edit</button><button class="ghost" data-merge="${l.id}">Merge…</button></td></tr>`).join('')}
     </tbody></table></div>`;
@@ -865,9 +881,11 @@ async function locations() {
     }
     const v = await modal({ title: 'Edit location', fields: [
       { name: 'name', label: 'Name', value: l.name, required: true, full: true },
+      { name: 'kind', label: 'Type (for the recorders\' "Works at" tag)', type: 'select', full: true,
+        options: [['', `Automatic (now: ${KIND_LABEL[l.kind_effective]})`], ['business', 'Business'], ['sp', 'SP In-Lab (Naruto Robot Mount)'], ['other', 'Other']], value: l.kind || '' },
       { name: 'notes', label: 'Notes / address', type: 'textarea', value: l.notes || '', full: true },
     ] });
-    if (v) { await api('/locations/' + id, { method: 'PUT', body: v }); render(); }
+    if (v) { try { await api('/locations/' + id, { method: 'PUT', body: { ...v, kind: v.kind || null } }); render(); } catch (err) { toast(err.message, true); } }
   });
 }
 

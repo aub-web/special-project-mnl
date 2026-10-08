@@ -195,6 +195,10 @@ ALTER TABLE businesses ADD COLUMN IF NOT EXISTS status TEXT;
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS default_scenes DOUBLE PRECISION;
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS rate_php DOUBLE PRECISION;
 
+-- What kind of place a location is, for the recorder "Works at" tags: business | sp | other.
+-- NULL = decide automatically (linked to a business → business; name mentions Naruto / In-Lab → sp; else other).
+ALTER TABLE locations ADD COLUMN IF NOT EXISTS kind TEXT;
+
 -- Recorders assigned to a business (in addition to anyone who logged hours at its location).
 CREATE TABLE IF NOT EXISTS business_recorders (
   business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
@@ -282,7 +286,7 @@ ON CONFLICT (key) DO NOTHING;
 
 // Bump when SCHEMA changes. The schema (with its ALTER TABLEs, which lock tables) only runs when the
 // stored version differs, so serverless cold starts don't block a running sync.
-const SCHEMA_VERSION = '2026-10-08.business-team';
+const SCHEMA_VERSION = '2026-10-08.works-at';
 
 let migrated;
 /** Create/upgrade tables if needed. Cached so each cold start checks once. */
