@@ -2,7 +2,7 @@
  * Studio Project Manila → Google Sheets write-back (version 2).
  *
  * Served at /apps-script/recorder-sheet.gs (Settings → "Copy script", which fills in SECRET for you).
- * Paste into the recorder Google Sheet: Extensions → Apps Script → replace Code.gs → Save.
+ * Works from any Apps Script project (attached to a sheet or standalone at script.google.com): replace Code.gs → Save.
  * First time: Deploy → New deployment → Web app → Execute as: Me · Who has access: Anyone → Deploy, copy the URL into Settings.
  * Updating: Deploy → Manage deployments → ✏ Edit → Version: New version → Deploy (the URL stays the same).
  *
@@ -14,7 +14,7 @@
  * The account that deploys this needs edit access to all three sheets.
  */
 const SECRET = 'PASTE_THE_SECRET_FROM_THE_APP_HERE';
-const SCRIPT_VERSION = 2;
+const SCRIPT_VERSION = 3;
 
 function doPost(e) {
   let body;
@@ -24,8 +24,8 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000); // one write at a time
   try {
-    if (body.action === 'ping') return out_({ ok: true, sheet: SpreadsheetApp.getActive().getName(), version: SCRIPT_VERSION });
-    if (body.action === 'upsertRecorder') return out_(upsertRecorder_(body.recorder || {}));
+    if (body.action === 'ping') return out_({ ok: true, sheet: recorderBook_(body.recorderSpreadsheetId).getName(), version: SCRIPT_VERSION });
+    if (body.action === 'upsertRecorder') return out_(upsertRecorder_(body.recorder || {}, body.recorderSpreadsheetId));
     if (body.action === 'upsertBusiness') return out_(upsertBusiness_(body.spreadsheetId, body.business || {}));
     if (body.action === 'addHoursBatch') return out_(addHoursBatch_(body.spreadsheetId, body.items || []));
     return out_({ ok: false, error: 'Unknown action (update the Apps Script to the latest version)' });
@@ -40,9 +40,17 @@ const key_ = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 // ---------------------------------------------------------------- recorders
 
-function upsertRecorder_(r) {
+/** The recorder sheet: by ID (sent by the app), or the sheet this script is attached to. */
+function recorderBook_(id) {
+  if (id) return SpreadsheetApp.openById(id);
+  const active = SpreadsheetApp.getActive();
+  if (!active) throw new Error('Recorder sheet ID missing — set it in the app (Settings → Recorder Google Sheet)');
+  return active;
+}
+
+function upsertRecorder_(r, recorderSpreadsheetId) {
   if (!r.name) return { ok: false, error: 'Name is required' };
-  const sheet = findRecorderSheet_();
+  const sheet = findRecorderSheet_(recorderBook_(recorderSpreadsheetId));
   if (!sheet) return { ok: false, error: 'No tab with Address and Payment Method columns found' };
   const values = sheet.getDataRange().getValues();
   const hRow = values.findIndex((row) => row.some((c) => /address/i.test(c)) && row.some((c) => /payment/i.test(c)));
@@ -85,8 +93,8 @@ function upsertRecorder_(r) {
   return { ok: true, row: sheetRow, updated: updated };
 }
 
-function findRecorderSheet_() {
-  return SpreadsheetApp.getActive().getSheets().find((s) => {
+function findRecorderSheet_(book) {
+  return book.getSheets().find((s) => {
     const top = s.getRange(1, 1, Math.min(5, s.getMaxRows()), Math.min(15, s.getMaxColumns())).getValues();
     return top.some((row) => row.some((c) => /address/i.test(c)) && row.some((c) => /payment/i.test(c)));
   });

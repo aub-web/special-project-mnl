@@ -22,7 +22,8 @@ async function callScript(payload) {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ ...payload, secret: s.sheets_webhook_secret }),
+      // The recorder sheet's ID lets the script work from any Apps Script project, attached to a sheet or standalone.
+      body: JSON.stringify({ ...payload, recorderSpreadsheetId: sheetId(s.recorder_sheet_id), secret: s.sheets_webhook_secret }),
       redirect: 'follow',
       signal: AbortSignal.timeout(15000),
     });
