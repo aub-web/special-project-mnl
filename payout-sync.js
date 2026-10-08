@@ -12,7 +12,7 @@
 import express from 'express';
 import { createHash } from 'node:crypto';
 import * as XLSX from 'xlsx';
-import { q, tx, getSettings, resolveRecorder, addAlias } from './db.js';
+import { q, one, tx, getSettings, resolveRecorder, addAlias } from './db.js';
 import { requireAdmin } from './auth.js';
 import { fetchWorkbook } from './businesses.js';
 
@@ -62,6 +62,7 @@ export function parsePayoutWorkbook(wb) {
   const sessions = [];
   const appAccounts = [];
   const idLinks = [];
+  const summaryRanges = []; // { tab, from, to } — used to create pay periods for new weeks
   const add = (s) => { if (s.hours > 0 && clean(s.who)) sessions.push({ ...s, who: clean(s.who) }); };
 
   // 1. Daily tabs. A date only counts as "covered" if its tab actually has hours (09/18 exists but is empty).
@@ -115,6 +116,15 @@ export function parsePayoutWorkbook(wb) {
     const data = rows(name);
     const h = data.findIndex((r) => /name of recorder/i.test(clean(r[0])));
     if (h < 0) continue;
+    const allDates = data[h].map((x) => cellDate(x)).filter(Boolean).sort();
+    if (allDates.length) {
+      // Prefer the range in the tab name ("Summary 1005 - 1011"), else the first/last date column.
+      const m = name.match(/(\d{2})\/?(\d{2})\s*-\s*(\d{2})\/?(\d{2})/);
+      const y = allDates[0].slice(0, 4);
+      summaryRanges.push(m
+        ? { tab: name.trim(), from: `${y}-${m[1]}-${m[2]}`, to: `${Number(m[3]) < Number(m[1]) ? Number(y) + 1 : y}-${m[3]}-${m[4]}` }
+        : { tab: name.trim(), from: allDates[0], to: allDates.at(-1) });
+    }
     const dateCols = data[h].map((x, i) => ({ i, date: cellDate(x) }))
       .filter((c) => c.date && !covered.has(c.date) && !fromSummary.has(c.date));
     if (!dateCols.length) continue;
@@ -185,7 +195,7 @@ export function parsePayoutWorkbook(wb) {
       }
     }
   }
-  return { sessions, appAccounts, idLinks };
+  return { sessions, appAccounts, idLinks, summaryRanges };
 }
 
 /**
@@ -193,7 +203,7 @@ export function parsePayoutWorkbook(wb) {
  * `c` is a transaction client.
  */
 export async function applyPayoutSessions(c, wb, { rate_php }) {
-  const { sessions, appAccounts, idLinks } = parsePayoutWorkbook(wb);
+  const { sessions, appAccounts, idLinks, summaryRanges } = parsePayoutWorkbook(wb);
   if (!sessions.length) throw Object.assign(new Error('No hours found in this file. Is it the Studio Payout Summary sheet?'), { status: 400 });
 
   const recCache = new Map();
@@ -236,6 +246,17 @@ export async function applyPayoutSessions(c, wb, { rate_php }) {
       WHERE id = $3 AND id_document_url IS NULL`, [l.url, l.label || null, await recorder(l.who)], c);
   }
 
+  // A new weekly summary tab gets its own pay period, unless an existing period already overlaps those dates.
+  const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const label = (d) => `${MONTH[Number(d.slice(5, 7)) - 1]} ${d.slice(8, 10)}`;
+  const newPeriods = [];
+  for (const r of summaryRanges) {
+    if (await one('SELECT 1 FROM periods WHERE start_date <= $2 AND end_date >= $1', [r.from, r.to], c)) continue;
+    await q(`INSERT INTO periods (name, start_date, end_date, status, notes) VALUES ($1, $2, $3, 'Open', $4)`,
+      [`${label(r.from)} – ${label(r.to)}`, r.from, r.to, `Created from sheet tab "${r.tab}"`], c);
+    newPeriods.push(`${label(r.from)} – ${label(r.to)}`);
+  }
+
   // Multiset diff so the admin sees exactly what the sync changed.
   const count = (list) => list.reduce((m, s) => m.set(keyOf(s), (m.get(keyOf(s)) || 0) + 1), new Map());
   const b = count(before), a = count(after);
@@ -247,6 +268,7 @@ export async function applyPayoutSessions(c, wb, { rate_php }) {
     hours: Math.round(after.reduce((t, s) => t + s.hours, 0) * 100) / 100,
     added: added.map(describe),
     removed: removed.map(describe),
+    newPeriods,
   };
 }
 

@@ -659,6 +659,10 @@ const regLink = (key) => `${location.origin}/register?k=${key}`;
 async function recorders() {
   const admin = me.role === 'admin';
   const [{ recorders: list }, s, regs] = await Promise.all([lookups(true), api('/settings'), admin ? api('/registrations') : []]);
+  // Same email on two recorders almost always means one person entered twice (e.g. a name spelled differently in a new tab).
+  const byEmail = {};
+  for (const r of list) if (r.email) (byEmail[r.email.toLowerCase()] ||= []).push(r);
+  const dupes = Object.values(byEmail).filter((g) => g.length > 1).map((g) => g.sort((a, b) => a.id - b.id));
   const noContract = list.filter((r) => r.contract_status !== 'Done').length;
   const noId = list.filter((r) => !r.id_document_url && !r.id_files).length;
   view.innerHTML = `
@@ -674,6 +678,13 @@ async function recorders() {
         <td>${new Date(g.created_at).toLocaleString()}</td>
         <td class="num"><button class="primary" data-review="${g.id}">Review</button> <button class="ghost danger" data-reject="${g.id}">Reject</button></td></tr>`).join('')}
       </tbody></table></div></div>` : ''}
+    ${admin && dupes.length ? `<div class="card reg-queue"><div class="section-head" style="margin-top:0"><h2>Possible duplicates <span class="badge">${dupes.length}</span></h2>
+      <span class="muted">Same email on more than one recorder. If it's one person, merge; if they're <b>different people</b>, fix the email in the recorder sheet instead.</span></div>
+      ${dupes.map((g) => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line)">
+        <span style="flex:1;min-width:200px">${g.map((r) => `<b>${esc(r.name)}</b> <span class="muted">(${hrs(r.hours)} h)</span>`).join(' &nbsp;·&nbsp; ')}
+          <div class="muted" style="font-size:12px">${esc(g[0].email)}</div></span>
+        ${g.slice(1).map((r) => `<button class="ghost" data-dupe="${r.id}|${g[0].id}">Merge “${esc(r.name)}” into “${esc(g[0].name)}”</button>`).join('')}
+      </div>`).join('')}</div>` : ''}
     <div class="toolbar">
       <label class="f" style="flex:1;min-width:180px">Search<input id="rc-q" placeholder="Name, email, contact, account…"></label>
       <label class="f">Show<select id="rc-f"><option value="">All recorders</option><option value="noid">No ID on file (${noId})</option><option value="nocontract">Contract pending (${noContract})</option>
@@ -737,6 +748,15 @@ async function recorders() {
       } });
     void v;
   };
+  view.addEventListener('click', async (e) => {
+    const pair = e.target.dataset.dupe;
+    if (!pair) return;
+    const [from, into] = pair.split('|');
+    const a = list.find((x) => String(x.id) === from), b = list.find((x) => String(x.id) === into);
+    if (!confirm(`Merge "${a.name}" into "${b.name}"?\n\nAll sessions, payments and files move to "${b.name}", and "${a.name}" is kept as another spelling so future syncs match.`)) return;
+    try { await api(`/recorders/${from}/merge`, { method: 'POST', body: { into } }); toast('Merged'); render(); }
+    catch (err) { toast(err.message, true); }
+  });
   view.addEventListener('click', async (e) => {
     const reviewId = e.target.dataset.review, rejectId = e.target.dataset.reject;
     if (!reviewId && !rejectId) return;

@@ -267,9 +267,14 @@ app.post('/api/recorders/:id/merge', wrap(async (req) => {
     await q('UPDATE payments SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q('UPDATE followups SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q('UPDATE recorder_aliases SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
+    await q('UPDATE recorder_files SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
+    await q('UPDATE registrations SET recorder_id = $1 WHERE recorder_id = $2', [into, from], c);
     await q(`UPDATE recorders SET app_account = COALESCE(app_account, $2), payout_account_no = COALESCE(payout_account_no, $3),
-             payout_account_name = COALESCE(payout_account_name, $4), contact = COALESCE(contact, $5) WHERE id = $1`,
-      [into, old.app_account, old.payout_account_no, old.payout_account_name, old.contact], c);
+             payout_account_name = COALESCE(payout_account_name, $4), contact = COALESCE(contact, $5),
+             email = COALESCE(email, $6), address = COALESCE(address, $7), payment_method = COALESCE(payment_method, $8),
+             id_document_url = COALESCE(id_document_url, $9), contract_url = COALESCE(contract_url, $10) WHERE id = $1`,
+      [into, old.app_account, old.payout_account_no, old.payout_account_name, old.contact,
+        old.email, old.address, old.payment_method, old.id_document_url, old.contract_url], c);
     await q('DELETE FROM recorders WHERE id = $1', [from], c);
     await addAlias(old.name, into, c);
     return { ok: true };

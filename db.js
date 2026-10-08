@@ -192,6 +192,7 @@ ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_url TEXT;
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_status TEXT;
 UPDATE recorders SET contract_status = CASE WHEN contract IS NOT NULL OR contract_url IS NOT NULL THEN 'Done' ELSE 'Pending' END
   WHERE contract_status IS NULL;
+ALTER TABLE recorders ALTER COLUMN contract_status SET DEFAULT 'Pending';
 
 -- Public registration form (/register?k=…). Submissions wait for an admin; nothing public writes to recorders directly.
 CREATE TABLE IF NOT EXISTS registrations (
@@ -262,7 +263,7 @@ ON CONFLICT (key) DO NOTHING;
 
 // Bump when SCHEMA changes. The schema (with its ALTER TABLEs, which lock tables) only runs when the
 // stored version differs, so serverless cold starts don't block a running sync.
-const SCHEMA_VERSION = '2026-10-02.writeback';
+const SCHEMA_VERSION = '2026-10-08.dedupe';
 
 let migrated;
 /** Create/upgrade tables if needed. Cached so each cold start checks once. */
@@ -310,8 +311,23 @@ export async function resolveRecorder(rawName, { create = true, fuzzy = false, d
     (await one('SELECT id FROM recorders WHERE lower(name) = lower($1)', [name], db)) ||
     (await one('SELECT recorder_id AS id FROM recorder_aliases WHERE alias = $1', [name.toLowerCase()], db));
   if (!row && fuzzy) {
+    const all = await q('SELECT id, name FROM recorders', [], db);
     row = (await one('SELECT recorder_id AS id FROM recorder_aliases WHERE alias = $1', [key], db)) ||
-      (await q('SELECT id, name FROM recorders', [], db)).find((r) => nameKey(r.name) === key);
+      all.find((r) => nameKey(r.name) === key);
+    if (!row) {
+      // One name's words all inside the other's, same surname, and only one such recorder:
+      // "Lord Leam T. Andes" ↔ "Leam Andes". ("Rencel Teodoro" fits two Rencels, so it never matches.)
+      const t = key.split(' ');
+      const fits = all.filter((r) => {
+        const c = nameKey(r.name).split(' ');
+        const [short, long] = c.length <= t.length ? [c, t] : [t, c];
+        return short.length >= 2 && c.at(-1) === t.at(-1) && short.every((w) => long.includes(w));
+      });
+      if (fits.length === 1) {
+        row = fits[0];
+        await addAlias(name, row.id, db); // remember the spelling so later lookups are exact
+      }
+    }
   }
   if (row) return row.id;
   if (!create) return null;
