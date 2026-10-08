@@ -251,8 +251,8 @@ document.addEventListener('click', (e) => {
 function businessCard(b) {
   const lastActive = [b.last_date, b.last_session].filter(Boolean).sort().at(-1);
   return `<a class="card biz" href="#/business/${b.id}">
-    <div class="biz-head"><b>${esc(b.name)}</b>${b.active ? '' : ' <span class="pill">inactive</span>'}</div>
-    <div class="biz-owner">${esc(b.owner_name || 'No owner on file')}</div>
+    <div class="biz-head"><b>${esc(b.name)}</b>${b.active ? '' : ' <span class="pill">inactive</span>'}${b.status ? ` <span class="pill ${/going/i.test(b.status) ? 'warn' : 'ok'}" style="font-size:11px">${esc(b.status)}</span>` : ''}</div>
+    <div class="biz-owner">👤 ${esc(b.owner_name || 'No owner on file')}${b.address ? `<div style="font-size:12px">📍 ${esc(b.address)}</div>` : ''}</div>
     <div class="biz-bank"><span class="pill">${esc(b.bank_name || 'No bank')}</span> ${maskAcct(b.bank_account_no)}
       ${driveLink(b.owner_id_url) ? `<span class="btn ghost id-btn" data-open="${esc(b.owner_id_url)}" title="Owner's ID — opens in Google Drive">🪪 Owner ID</span>` : ''}</div>
     <div class="biz-stats">
@@ -282,7 +282,7 @@ async function dashboard() {
       ${isAdmin() ? `<div class="card kpi"><div class="label">Needs attention</div><div class="value">${d.openFollowups}</div>
         <div class="sub"><a href="#/followups">follow-ups</a> · ${d.openPeriods} <a href="#/periods">open period(s)</a></div></div>` : ''}
     </div>
-    <div class="section-head"><h2>Businesses</h2>
+    <div class="section-head"><h2>Businesses ${canSee('businesses') ? '<button class="primary" id="db-add-biz" style="margin-left:8px;padding:4px 10px;font-size:13px">+ Add business</button>' : ''}</h2>
       <span class="muted">${biz.synced_at ? `Synced from Google Sheet ${new Date(biz.synced_at).toLocaleString()}` : 'Not synced yet'} · <a href="#/businesses">Manage</a></span></div>
     ${biz.businesses.length
       ? `<div class="grid biz-grid">${biz.businesses.filter((b) => b.active).map(businessCard).join('')}</div>`
@@ -303,6 +303,7 @@ async function dashboard() {
       <table><thead><tr><th>Name</th><th class="num">Days</th><th class="num">Hours</th><th class="num">Earned</th></tr></thead><tbody>
       ${d.topRecorders.map((r) => `<tr><td>${canSee('sessions') ? `<a href="#/sessions/${r.id}">${esc(r.name)}</a>` : esc(r.name)}</td><td class="num">${r.days}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
       </tbody></table></div>`;
+  $('#db-add-biz')?.addEventListener('click', addBusiness);
 }
 
 // ---------- Log hours (replaces the per-day sheet) ----------
@@ -921,12 +922,19 @@ async function followups() {
 }
 
 // ---------- Businesses ----------
-function businessFields(b = {}, locs = []) {
-  return [
+function businessFields(b = {}, locs = [], { short = false } = {}) {
+  const main = [
     { name: 'name', label: 'Business name', value: b.name, required: true, full: true },
-    { name: 'owner_name', label: "Owner's name", value: b.owner_name || '', full: true },
-    { name: 'bank_name', label: 'Bank / wallet', value: b.bank_name || '' },
-    { name: 'bank_account_no', label: 'Account no.', value: b.bank_account_no || '' },
+    { name: 'address', label: 'Address', type: 'textarea', value: b.address || '', full: true },
+    { name: 'owner_name', label: 'Owner', value: b.owner_name || '', full: true },
+    { name: 'bank_name', label: 'Bank (e.g. BDO, GCash, Maribank)', value: b.bank_name || '' },
+    { name: 'bank_account_no', label: 'Bank account no.', value: b.bank_account_no || '' },
+    { name: 'default_scenes', label: 'Scene (scenes per shift)', type: 'number', step: '1', value: b.default_scenes ?? 3 },
+    { name: 'rate_php', label: 'Payout (₱ per shift × scene)', type: 'number', step: '0.01', value: b.rate_php ?? cache.settings?.business_rate_php ?? 850 },
+  ];
+  if (short) return [...main, { name: 'location_id', label: 'Recorder location (optional — links recorder hours)', type: 'select', full: true,
+    options: [['', '— none —'], ...locs.map((l) => [l.id, l.name])], value: b.location_id ?? '' }];
+  return [...main,
     { name: 'account_name', label: 'Account name', value: b.account_name || '', full: true },
     { name: 'gcash_owner', label: 'GCash owner', value: b.gcash_owner || '', full: true },
     { name: 'owner_id_url', label: "Owner's ID link (Google Drive)", type: 'url', value: b.owner_id_url || '' },
@@ -937,7 +945,17 @@ function businessFields(b = {}, locs = []) {
     { name: 'notes', label: 'Notes', type: 'textarea', value: b.notes || '', full: true },
   ];
 }
-const businessBody = (v) => ({ ...v, active: v.active === 'true', location_id: v.location_id ? Number(v.location_id) : null });
+const businessBody = (v) => ({ ...v, ...(v.active !== undefined ? { active: v.active === 'true' } : {}), location_id: v.location_id ? Number(v.location_id) : null });
+
+/** "+ Add business" (dashboard and Businesses page). Opens the new business afterwards. */
+async function addBusiness() {
+  const { locations: locs } = await lookups();
+  const v = await modal({ title: 'Add business', submit: 'Add business', fields: businessFields({}, locs, { short: true }),
+    extra: '<p class="muted" style="margin:0;font-size:13px">Payout per shift = Scene × Payout (e.g. 3 scenes × ₱850 = ₱2,550 per shift).</p>' });
+  if (!v) return;
+  try { const b = await api('/businesses', { method: 'POST', body: businessBody(v) }); toast(`${b.name} added`); location.hash = '#/business/' + b.id; }
+  catch (e) { toast(e.message, true); }
+}
 
 async function businesses() {
   const [{ businesses: list, synced_at }, { locations: locs }] = await Promise.all([api('/businesses'), lookups()]);
@@ -953,12 +971,7 @@ async function businesses() {
       <td class="num">${hrs(b.shifts)}</td><td class="num">${php(b.payout)}</td><td class="num">${hrs(b.recorder_hours)}</td>
       <td>${fmtDate([b.last_date, b.last_session].filter(Boolean).sort().at(-1))}</td></tr>`).join('')}
     </tbody></table></div>` : '<div class="card empty">No businesses yet.</div>'}`;
-  $('#bz-new').onclick = async () => {
-    const v = await modal({ title: 'Add business', fields: businessFields({}, locs) });
-    if (!v) return;
-    try { const b = await api('/businesses', { method: 'POST', body: businessBody(v) }); location.hash = '#/business/' + b.id; }
-    catch (e) { toast(e.message, true); }
-  };
+  $('#bz-new').onclick = addBusiness;
   if (admin) $('#bz-sync').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = 'Syncing…';
     try {
@@ -975,7 +988,7 @@ async function business(id) {
   view.innerHTML = `
     <div class="head"><div><a href="#/businesses" class="muted">← Businesses</a><h1>${esc(b.name)}</h1>
       <p>${b.location ? `Recorders log hours here as ${canSee('sessions') ? `<a href="#/sessions?${qs({ from: b.first_session, to: b.last_session })}">${esc(b.location)}</a>` : `<b>${esc(b.location)}</b>`}` : 'No recorder location linked'}</p></div>
-      <div style="display:flex;gap:8px"><button id="bz-edit">Edit profile</button><button class="primary" id="bz-shift">+ Add shift</button></div></div>
+      <div class="head-actions"><button id="bz-edit">Edit profile</button><button id="bz-add-rec">+ Add recorder</button><button class="primary" id="bz-shift">+ Add shift</button></div></div>
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Business payout</div><div class="value">${php(b.payout)}</div><div class="sub">${hrs(b.shifts)} shifts</div></div>
       <div class="card kpi"><div class="label">Recorder hours</div><div class="value">${hrs(b.recorder_hours)}</div><div class="sub">${php(b.recorder_php)} to recorders</div></div>
@@ -984,7 +997,9 @@ async function business(id) {
     </div>
     <div class="grid two">
       <div class="card"><h2>Profile</h2><dl class="profile">
-        ${row('Owner', esc(b.owner_name))}${row('Bank / wallet', esc(b.bank_name))}${row('Account no.', b.bank_account_no ? maskAcct(b.bank_account_no) : '')}
+        ${row('Address', esc(b.address))}${row('Owner', esc(b.owner_name))}${row('Bank', esc(b.bank_name))}${row('Bank account', b.bank_account_no ? maskAcct(b.bank_account_no) : '')}
+        ${row('Scene', b.default_scenes != null ? hrs(b.default_scenes) + ' per shift' : '')}${row('Payout', b.rate_php != null ? php(b.rate_php) + ' per shift × scene' : '')}
+        ${b.status ? row('Status', `<span class="pill ${/going/i.test(b.status) ? 'warn' : 'ok'}">${esc(b.status)}</span>`) : ''}
         ${row('Account name', esc(b.account_name))}${row('GCash owner', esc(b.gcash_owner))}
         ${row("Owner's ID", driveLink(b.owner_id_url) ? `<a class="btn ghost id-btn" href="${esc(b.owner_id_url)}" target="_blank" rel="noopener noreferrer">🪪 View ID</a>` : '<span class="pill warn">No ID on file</span>')}
         ${b.gcash_owner_id_url ? row("GCash owner's ID", `<a class="btn ghost id-btn" href="${esc(b.gcash_owner_id_url)}" target="_blank" rel="noopener noreferrer">🪪 View ID</a>`) : ''}${row('Notes', esc(b.notes))}
@@ -994,6 +1009,14 @@ async function business(id) {
         ${b.recorder_log.map((r) => `<tr><td>${weekday(r.date)} ${fmtDate(r.date)}</td><td class="num">${r.recorders}</td><td class="num">${hrs(r.hours)}</td><td class="num">${php(r.php)}</td></tr>`).join('')}
         </tbody></table>` : '<p class="muted">No recorder sessions at the linked location.</p>'}</div>
     </div>
+    <div class="section-head" style="margin-top:14px"><h2>Recorders <span class="muted" style="font-weight:400">(${b.team.length})</span></h2>
+      <span class="muted">Added to this business, plus anyone who logged hours at ${b.location ? esc(b.location) : 'its location'}</span></div>
+    <div class="table-wrap" style="margin-bottom:14px">${b.team.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th class="num">Hours here</th><th>Last here</th><th></th></tr></thead><tbody>
+      ${b.team.map((r) => `<tr><td><b>${esc(r.name)}</b> ${r.assigned ? '<span class="pill accent" style="font-size:11px">added</span>' : '<span class="pill" style="font-size:11px">worked here</span>'}</td>
+        <td>${r.contact ? `<a href="tel:${esc(r.contact)}">${esc(r.contact)}</a>` : '<span class="muted">—</span>'}</td>
+        <td class="num">${hrs(r.hours)}</td><td>${fmtDate(r.last_date)}</td>
+        <td class="num">${r.assigned ? `<button class="ghost danger" data-unassign="${r.id}">Remove</button>` : ''}</td></tr>`).join('')}
+      </tbody></table>` : '<div class="empty">No recorders yet. Use <b>+ Add recorder</b>.</div>'}</div>
     <div class="section-head" style="margin-top:14px"><h2>Shifts hosted</h2><span class="muted">Rows marked “sheet” come from the Google Sheet and update on sync</span></div>
     <div class="table-wrap">${b.shift_log.length ? `<table><thead><tr><th>Date</th><th class="num">Shifts</th><th class="num">Scenes</th><th class="num">Rate</th><th class="num">Payout</th><th>Source</th><th></th></tr></thead><tbody>
       ${b.shift_log.map((s) => `<tr><td>${weekday(s.date)} ${fmtDate(s.date)}</td><td class="num">${hrs(s.shifts)}</td><td class="num">${hrs(s.scenes)}</td>
@@ -1013,14 +1036,35 @@ async function business(id) {
     const v = await modal({ title: `Add shift · ${b.name}`, fields: [
       { name: 'date', label: 'Date', type: 'date', value: today(), required: true },
       { name: 'shifts', label: 'Shifts', type: 'number', step: '0.5', value: 1, required: true },
-      { name: 'scenes', label: 'Scenes', type: 'number', step: '1', value: last?.scenes ?? 3, required: true },
-      { name: 'rate_php', label: 'Rate (PHP)', type: 'number', step: '0.01', value: last?.rate_php ?? cache.settings?.business_rate_php ?? 850, required: true },
+      { name: 'scenes', label: 'Scenes', type: 'number', step: '1', value: b.default_scenes ?? last?.scenes ?? 3, required: true },
+      { name: 'rate_php', label: 'Payout (₱ per shift × scene)', type: 'number', step: '0.01', value: b.rate_php ?? last?.rate_php ?? cache.settings?.business_rate_php ?? 850, required: true },
       { name: 'notes', label: 'Notes', full: true },
     ] });
     if (!v) return;
     try { await api('/business-shifts', { method: 'POST', body: { ...v, business_id: b.id } }); toast('Shift added'); render(); }
     catch (e) { toast(e.message, true); }
   };
+  $('#bz-add-rec').onclick = async () => {
+    const options = await api('/businesses/recorder-options');
+    const taken = new Set(b.team.filter((r) => r.assigned).map((r) => r.id));
+    const v = await modal({ title: `Add recorder · ${b.name}`, submit: 'Add',
+      extra: `<datalist id="dl-biz-rec">${options.filter((o) => !taken.has(o.id)).map((o) => `<option value="${esc(o.name)}">`).join('')}</datalist>
+        <p class="muted" style="margin:0;font-size:13px">Pick an existing recorder, or type a new full name to create them.
+        New recorders can then complete their details through the registration link.</p>`,
+      fields: [{ name: 'name', label: 'Recorder', list: 'dl-biz-rec', required: true, full: true }] });
+    if (!v) return;
+    const match = options.find((o) => o.name.toLowerCase() === v.name.trim().toLowerCase());
+    try {
+      const r = await api(`/businesses/${b.id}/recorders`, { method: 'POST', body: match ? { recorder_id: match.id } : { name: v.name } });
+      toast(r.created ? `New recorder "${v.name.trim()}" created and added${sheetNote(r.sheet)}` : 'Recorder added'); sheetWarn(r.sheet); render();
+    } catch (err) { toast(err.message, true); }
+  };
+  view.addEventListener('click', async (e) => {
+    const rid = e.target.dataset.unassign; if (!rid) return;
+    const r = b.team.find((x) => String(x.id) === rid);
+    if (!confirm(`Remove ${r.name} from ${b.name}? (Their logged hours stay.)`)) return;
+    try { await api(`/businesses/${b.id}/recorders/${rid}`, { method: 'DELETE' }); render(); } catch (err) { toast(err.message, true); }
+  });
   view.addEventListener('click', async (e) => {
     const sid = e.target.dataset.del; if (!sid) return;
     if (!confirm('Delete this shift?')) return;

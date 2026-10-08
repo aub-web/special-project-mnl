@@ -188,6 +188,21 @@ ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_hard_copy TEXT;   -- "do
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS id_document_url TEXT;
 ALTER TABLE recorders ADD COLUMN IF NOT EXISTS contract_url TEXT;
 
+-- Business profile extras: address, engagement status from the sheet ("Finish" / "On going"),
+-- and the defaults used for new shifts: scenes per shift and ₱ per shift × scene.
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS default_scenes DOUBLE PRECISION;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS rate_php DOUBLE PRECISION;
+
+-- Recorders assigned to a business (in addition to anyone who logged hours at its location).
+CREATE TABLE IF NOT EXISTS business_recorders (
+  business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  recorder_id INTEGER NOT NULL REFERENCES recorders(id) ON DELETE CASCADE,
+  added_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (business_id, recorder_id)
+);
+
 -- Business owner IDs (Google Drive links, e.g. from the "Business Owner's ID" folder).
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS owner_id_url TEXT;
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS gcash_owner_id_url TEXT;
@@ -267,7 +282,7 @@ ON CONFLICT (key) DO NOTHING;
 
 // Bump when SCHEMA changes. The schema (with its ALTER TABLEs, which lock tables) only runs when the
 // stored version differs, so serverless cold starts don't block a running sync.
-const SCHEMA_VERSION = '2026-10-08.owner-ids';
+const SCHEMA_VERSION = '2026-10-08.business-team';
 
 let migrated;
 /** Create/upgrade tables if needed. Cached so each cold start checks once. */
